@@ -9,24 +9,27 @@ export class ConnectionCopy {
 export function connectionCopy(phase: string, stale: boolean, hasNodes: boolean,
   health: string = '', established: boolean = false): ConnectionCopy {
   const copy = new ConnectionCopy();
+  if (phase === 'STOP_UNCONFIRMED') {
+    copy.title = '需要恢复连接';
+    copy.detail = '点“恢复连接”，按当前手机状态处理。';
+    copy.needsHelp = true; copy.warning = true; return copy;
+  }
   if (stale) {
-    copy.title = '连接状态待确认';
-    copy.detail = '暂时无法读取最新连接状态，请查看诊断。';
-    copy.needsHelp = true;
-    copy.warning = true;
+    copy.title = '正在检查连接';
+    copy.detail = '请稍候。';
     return copy;
   }
   const terminal = phase === 'STOPPED' || phase === 'IDLE' || phase === 'ERROR' ||
     phase === 'POISONED' || phase === 'RECONNECTING';
-  if (!terminal && established) {
-    copy.title = '已连接';
-    copy.detail = 'VPN 连接已建立。';
+  if (!terminal && health === 'reachable') {
+    copy.title = '网络正常';
+    copy.detail = '可以打开应用使用。';
     return copy;
   }
-  if (!terminal && health === 'reachable') {
-    copy.title = '已连接';
-    copy.detail = '网络检查正常。';
-    return copy;
+  if (!terminal && health === 'partial') {
+    copy.title = '点一下修复连接';
+    copy.detail = '点“修复并检测”，自动重连当前线路并检查结果。';
+    copy.needsHelp = true; copy.warning = true; return copy;
   }
   if (!terminal && health === 'checking') {
     copy.title = '正在检查连接';
@@ -34,17 +37,21 @@ export function connectionCopy(phase: string, stale: boolean, hasNodes: boolean,
     return copy;
   }
   if (!terminal && health === 'check-failed') {
-    copy.title = '连接需检查';
-    copy.detail = '连接仍保持，但部分网络检查未通过。';
+    copy.title = '点一下修复连接';
+    copy.detail = '点“修复并检测”，自动重连当前线路并检查结果。';
     copy.needsHelp = true;
     copy.warning = true;
     return copy;
   }
   if (!terminal && health === 'unverified') {
-    copy.title = '连接状态待确认';
-    copy.detail = '连接保持中，网络检查暂未完成。可尝试访问网站，或查看诊断。';
+    copy.title = '检查一下连接';
+    copy.detail = '点“检测连接”，马上检查当前网络。';
     copy.needsHelp = true;
     return copy;
+  }
+  if (!terminal && health === 'network-unavailable') {
+    copy.title = '请先连接手机网络'; copy.detail = '连接 Wi-Fi 或开启移动数据，再点“检测连接”。';
+    copy.warning = true; copy.needsHelp = true; return copy;
   }
   if (!terminal && health === 'offline') {
     copy.title = '连接已中断';
@@ -53,10 +60,15 @@ export function connectionCopy(phase: string, stale: boolean, hasNodes: boolean,
     copy.warning = true;
     return copy;
   }
+  if (!terminal && established) {
+    copy.title = '隧道已连接 · 待检测';
+    copy.detail = '隧道已建立，尚无本次联网检测结果。';
+    return copy;
+  }
   switch (phase) {
     case 'CANARY_OK':
-      copy.title = '已连接';
-      copy.detail = '网络连接正常。';
+      copy.title = '隧道已建立 · 待检测';
+      copy.detail = '正在检查网站访问。';
       break;
     case 'STARTING':
     case 'VPN_CREATED':
@@ -77,24 +89,24 @@ export function connectionCopy(phase: string, stale: boolean, hasNodes: boolean,
       break;
     case 'DEGRADED':
       copy.title = '连接不稳定';
-      copy.detail = '部分网络检查未通过，请查看诊断。';
+      copy.detail = '点“修复并检测”，自动重连当前线路。';
       copy.needsHelp = true;
       copy.warning = true;
       break;
     case 'DEGRADED_UNPROVEN':
-      copy.title = '连接状态待确认';
-      copy.detail = '暂时无法确认网络访问情况，请查看诊断。';
+      copy.title = '先检测连接';
+      copy.detail = '点“检测连接”，检查当前网络。';
       copy.needsHelp = true;
       break;
     case 'ERROR':
       copy.title = '连接失败';
-      copy.detail = '未能建立连接。请检查网络和节点，或查看诊断。';
+      copy.detail = '点“重新连接”再试一次；仍失败请到“节点”页选择另一个美国节点。';
       copy.needsHelp = true;
       copy.warning = true;
       break;
     case 'POISONED':
-      copy.title = '连接需要重置';
-      copy.detail = '上次连接未能正常结束，请查看诊断后重试。';
+      copy.title = '需要恢复连接';
+      copy.detail = '点“恢复连接”，处理旧连接后重新连接。';
       copy.needsHelp = true;
       copy.warning = true;
       break;
@@ -104,8 +116,8 @@ export function connectionCopy(phase: string, stale: boolean, hasNodes: boolean,
     case 'IDLE':
       break;
     default:
-      copy.title = '连接状态待确认';
-      copy.detail = '暂时无法确认连接是否可用，请查看诊断。';
+      copy.title = '需要检查连接';
+      copy.detail = '点“检测连接”，检查当前网络。';
       copy.needsHelp = true;
       copy.warning = true;
       break;

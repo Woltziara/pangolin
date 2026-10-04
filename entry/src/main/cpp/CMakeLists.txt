@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.5.0)
 project(heyvpn)
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 set(NATIVERENDER_ROOT_PATH ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -18,7 +20,7 @@ target_link_libraries(heyvpn PUBLIC
     libdl.so)
 
 # Production HAP only ships the R1 cores: libxray.so + libhevsocks5tun.so.
-# Missing cores are a configuration error, never a silently incomplete HAP.
+# Unused prebuilts stay on disk for evidence but are not packaged.
 add_custom_target(copy_prebuilt_libs ALL)
 add_dependencies(copy_prebuilt_libs heyvpn)
 foreach(PREBUILT_LIB libxray.so libhevsocks5tun.so)
@@ -31,3 +33,9 @@ foreach(PREBUILT_LIB libxray.so libhevsocks5tun.so)
         message(FATAL_ERROR "Missing ${PREBUILT_LIB}. Run scripts/build.sh first.")
     endif()
 endforeach()
+
+# Production defaults to no file-driven failure injection.
+option(PANGOLIN_ENABLE_FAULT_INJECTION "Dedicated adversarial test HAP only" OFF)
+if(PANGOLIN_ENABLE_FAULT_INJECTION)
+  target_compile_definitions(heyvpn PRIVATE PANGOLIN_ENABLE_FAULT_INJECTION=1)
+endif()

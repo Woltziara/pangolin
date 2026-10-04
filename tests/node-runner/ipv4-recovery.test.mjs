@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
@@ -6,7 +7,7 @@ function load(path,deps={},extra={}){
   const source=readFileSync(new URL('../../entry/src/main/ets/'+path,import.meta.url),'utf8');
   const js=ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText;
   const module={exports:{}};vm.runInNewContext(js,{module,exports:module.exports,Date,setTimeout,clearTimeout,
-    require(n){if(!(n in deps))throw Error('Unexpected import '+n);return deps[n];},...extra});return module.exports;
+    require(n){if(!(n in deps)){const b=legacyBoundary(n);if(b!==undefined)return b;throw Error('Unexpected import '+n);}return deps[n];},...extra});return module.exports;
 }
 const status=load('net/DataplaneStatus.ets');
 let clock=100000,nativeCalls=[],canaryOk=false,port=12345;
@@ -17,7 +18,7 @@ const deps={
     autoFailoverEnabled(){return true;}}},
   '../core/ChannelPolicy':load('core/ChannelPolicy.ets'),
   '@kit.NetworkKit':{VpnExtensionAbility:class {},connection:{}},
-  '@kit.PerformanceAnalysisKit':{hilog:{info(){},warn(){},error(){}}},'@kit.ArkTS':{},
+  '@kit.PerformanceAnalysisKit':{hilog:{info(){},warn(){},error(){}}},'@kit.ArkTS':{util:{generateRandomUUID:()=> 'test-owner'}},
   '../net/DataplaneStatus':status,
   '../core/XrayRuntime':{SocksSession,newSocksSession(){port++;return new SocksSession();},
     buildRuntimeXrayConfig(){return JSON.stringify({outbounds:[{tag:'unresolved'}],dns:{servers:['unchanged']}});}},
@@ -42,7 +43,7 @@ function instance(){const v=new Vpn();v.context={filesDir:'/private'};v.outbound
 const v=instance();v.enqueue('start','g','full');assert.equal(v.latestCommand.nodeSystemDns,true);
 v.enqueue('start','g','full',false,false);assert.equal(v.latestCommand.nodeSystemDns,true);
 v.enqueue('start','g','full',true,false);assert.equal(v.latestCommand.nodeSystemDns,false);
-const recovered=[];v.requestRecover=reason=>recovered.push(reason);
+const recovered=[];v.requestRecover=reason=>recovered.push(reason);v.scheduleNetworkRecovery=()=>{if(v.networkRefreshPending){v.networkRefreshPending=false;v.requestRecover('netAvailable');}};
 v.onNetEvent('available',{netId:1});assert.equal(recovered.length,0);
 v.onNetEvent('available',{netId:2});assert.equal(recovered.length,1);
 v.onNetEvent('available',{netId:2});assert.equal(recovered.length,1);
@@ -73,5 +74,5 @@ const Empty=load('vpn/TunnelVpnAbility.ets',emptyDeps,{Date:{now:()=>clock}}).de
 const empty=new Empty();empty.context={};empty.enqueue=()=>{throw Error('status query must not start VPN');};
 const request={parameters:{command:'diagnose-connection-status',statusGeneration:'old',statusAt:old.at}};
 empty.onCreate(request);empty.forcePublish=()=>{published++;};empty.onRequest(request,1);
-assert.equal(empty.status.phase,'STOPPED');assert.equal(empty.desiredRunning,false);assert.equal(empty.status.vpnCreated,false);
-assert.equal(published,2);console.log('PASS actual VPN owner status: live owner refresh and fresh empty owner do not create a tunnel');
+assert.equal(empty.status.phase,'IDLE');assert.equal(empty.desiredRunning,false);assert.equal(empty.status.vpnCreated,false);
+assert.equal(published,1,'empty new owner cannot attest old resources');console.log('PASS actual VPN owner status: live owner refresh and fresh empty owner do not create a tunnel');

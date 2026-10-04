@@ -1,9 +1,13 @@
+import { LIFECYCLE_GATE } from './LifecycleGate';
+import { CONTROL_FILE, OWNER_TERMINAL_FILE, controlBlocksStart, terminalProven } from '../net/OwnerTerminal';
+import { PLATFORM_OPERATIONS_FILE } from './PlatformOperations';
 import { UI_FEEDBACK_FILE } from './UiFeedback';
 // 穿山 (GPL-3.0) — 隐私与数据管理（Phase D 新增）。
 // 硬约束：本模块的一切删除操作只允许触碰 filesDir 下的已知文件名
 // （经 StatusStore.removeFile 拼路径），绝不引用 filesDir 之外的目录。
 import { common } from '@kit.AbilityKit';
-import { SETTINGS_FILE } from './SettingsStore';
+import { SETTINGS_FILE, SettingsStore } from './SettingsStore';
+import { Revocations } from './Revocations';
 import { EVENT_HEAD_FILE, EVENT_SNAPSHOT_FILE, EVENTS_FILE } from './EventStore';
 import { HuksSecretStore } from './HuksSecretStore';
 import { NodeStore, StoredNode } from './NodeStore';
@@ -47,11 +51,69 @@ export class ClearLogsResult {
 }
 
 export class DataManagement {
+  static pendingSubscriptionRemoval(context: common.Context): string {
+    const raw = StatusStore.readStrictText(context, CONTROL_FILE);
+    if (raw.length === 0) return '';
+    const row = JSON.parse(raw) as Record<string, Object>;
+    const action = row['action'];
+    if (row['kind'] === 'maintenance' && row['state'] === 'pending' && typeof action === 'string' &&
+      /^subscription:sub-[A-Za-z0-9-]+$/.test(action)) return action.substring(13);
+    return '';
+  }
+
+  /** Delete one source and its own nodes; retain a resumable plan before the first data write. */
+  static removeSubscriptionAndNodes(context: common.Context, id: string): number {
+    if (!/^sub-[A-Za-z0-9-]+$/.test(id)) throw new Error('订阅标识无效，未删除。');
+    const release = DataManagement.enter(context, `subscription:${id}`);
+    let ok = false;
+    try {
+      NodeStore.loadNodes(context); SubscriptionStore.load(context); SettingsStore.load(context);
+      const catalog = JSON.parse(StatusStore.readStrictText(context, 'nodes.json') || '{"v":2,"nodes":[]}') as Record<string, Object>;
+      const rows = catalog['nodes'] as Record<string, Object>[];
+      const subs = JSON.parse(StatusStore.readStrictText(context, 'subscriptions.json') || '[]') as Record<string, Object>[];
+      const settingsRaw = StatusStore.readStrictText(context, SETTINGS_FILE);
+      const settings = JSON.parse(settingsRaw || '{}') as Record<string, Object>;
+      const planFile = 'subscription-removal.json';
+      const priorRaw = StatusStore.readStrictText(context, planFile);
+      const prior = JSON.parse(priorRaw || '{}') as Record<string, Object>;
+      let ids: string[] = rows.filter((row: Record<string, Object>) => row['sourceId'] === id)
+        .map((row: Record<string, Object>) => row['id'] as string);
+      if (prior['completed'] === false) {
+        if (prior['sourceId'] !== id || !Array.isArray(prior['nodeIds']) ||
+          !(prior['nodeIds'] as Object[]).every((value: Object) => typeof value === 'string'))
+          throw new Error('上次订阅删除尚未完成，请先继续原操作。');
+        ids = Array.from(new Set<string>(ids.concat(prior['nodeIds'] as string[])));
+      }
+      const plan: Record<string, Object> = { 'sourceId': id, 'nodeIds': ids, 'completed': false };
+      StatusStore.writeText(context, planFile, JSON.stringify(plan));
+      Revocations.revoke(context, [`source:${id}`].concat(ids.map((nodeId: string) => `node:${nodeId}`)));
+      const kept = rows.filter((row: Record<string, Object>) => row['sourceId'] !== id);
+      catalog['nodes'] = kept;
+      StatusStore.writeText(context, 'nodes.json', JSON.stringify(catalog, null, 2));
+      const keptIds = new Set<string>(kept.map((row: Record<string, Object>) => row['id'] as string));
+      const removedIds = new Set<string>(ids);
+      let changed = false;
+      ['singleNodeId', 'manualNodeId', 'chatgptNodeId', 'generalNodeId', 'lastGoodNodeId'].forEach((key: string) => {
+        const value = settings[key];
+        if (typeof value === 'string' && removedIds.has(value)) {
+          const single = settings['singleNodeId'];
+          settings[key] = key === 'manualNodeId' && typeof single === 'string' && keptIds.has(single) ? single : '';
+          changed = true;
+        }
+      });
+      if (changed) StatusStore.writeText(context, SETTINGS_FILE, JSON.stringify(settings, null, 2));
+      StatusStore.writeText(context, 'subscriptions.json', JSON.stringify(subs.filter((row: Record<string, Object>) => row['id'] !== id), null, 2));
+      plan['completed'] = true;
+      StatusStore.writeText(context, planFile, JSON.stringify(plan));
+      ok = true;
+      return ids.length;
+    } finally { release(ok); }
+  }
+
   /** 清理日志：删除事件账本与访问/探测日志，返回删除计数。 */
-  static clearLogs(context: common.Context): ClearLogsResult {
-    DataManagement.assertDisconnected(context);
+  private static clearLogsUnchecked(context: common.Context): ClearLogsResult {
     const result = new ClearLogsResult();
-    const reportFiles = StatusStore.listNames(context).filter((name: string) =>
+    const reportFiles = StatusStore.listNamesStrict(context).filter((name: string) =>
       /^(diagnostic-report-|incident-report-)\d+\.json$/.test(name));
     const targets = LOG_FILES.concat(JOURNAL_FILES, ['native-stats.json'], reportFiles);
     for (let i = 0; i < targets.length; i++) {
@@ -72,10 +134,10 @@ export class DataManagement {
   }
 
   /** 删除全部订阅与节点：nodes.json 写空 v2，subscriptions.json 写空数组。 */
-  static async clearNodesAndSubscriptions(context: common.Context): Promise<void> {
-    DataManagement.assertDisconnected(context);
-    NodeStore.saveNodes(context, []);
-    SubscriptionStore.save(context, []);
+  private static async clearNodesUnchecked(context: common.Context): Promise<void> {
+    // This method holds the cross-process data lease. Do not reacquire it via normal writers.
+    StatusStore.writeText(context, 'nodes.json', '{"v":2,"nodes":[]}');
+    StatusStore.writeText(context, 'subscriptions.json', '[]');
     // 运行时选型痕迹一并清掉，避免悬空引用。
     StatusStore.removeFile(context, OUTBOUND_FILE);
     await HuksSecretStore.removeProtected(context);
@@ -87,9 +149,9 @@ export class DataManagement {
    * 清空全部数据：节点 / 订阅 / 分流规则 / 设置 / 日志 / 缓存的节点凭据
    * （HUKS 信封与密钥）。调用方必须保证 VPN 已断开。
    */
-  static async wipeAll(context: common.Context): Promise<void> {
-    await DataManagement.clearNodesAndSubscriptions(context);
-    DataManagement.clearLogs(context);
+  private static async wipeAllUnchecked(context: common.Context): Promise<void> {
+    await DataManagement.clearNodesUnchecked(context);
+    DataManagement.clearLogsUnchecked(context);
     StatusStore.removeFile(context, USER_RULES_FILE);
     StatusStore.removeFile(context, SETTINGS_FILE);
     StatusStore.removeFile(context, OUTBOUND_FILE);
@@ -97,22 +159,72 @@ export class DataManagement {
     // Only public, bundled GeoIP/GeoSite databases may remain. All personal
     // diagnostics, stale receipts, caches and future app-owned records are removed.
     const keep: string[] = ['geoip.dat', 'geosite.dat', 'geoip.dat.release', 'geosite.dat.release',
-      'geoip.dat.release.lock', 'geosite.dat.release.lock'];
-    StatusStore.listNames(context).forEach((name: string) => {
+      'geoip.dat.release.lock', 'geosite.dat.release.lock', CONTROL_FILE, PLATFORM_OPERATIONS_FILE,
+      'user-data-transaction.lock'];
+    StatusStore.listNamesStrict(context).forEach((name: string) => {
       assertSafeName(name);
-      if (keep.indexOf(name) < 0) { StatusStore.removeFile(context, name); }
+      if (!name.endsWith('.lock') && keep.indexOf(name) < 0) { StatusStore.removeFile(context, name); }
     });
   }
 
-  private static assertDisconnected(context: common.Context): void {
-    const status = StatusStore.readStatus(context);
-    if (status.desiredRunning || status.vpnCreated || status.tunFdValid || status.xrayRunning || status.forwarderOk) {
-      throw new Error('请先断开连接再清理数据');
+  private static enter(context: common.Context, action: string): (ok: boolean) => void {
+    const releaseGate = LIFECYCLE_GATE.beginMaintenance();
+    let lease = 0;
+    try {
+      lease = StatusStore.acquireUserDataLease(context);
+      const status = StatusStore.readStatus(context);
+      const before = StatusStore.readStrictText(context, CONTROL_FILE);
+      const original = StatusStore.readOwnerStatus(context);
+      const previous = JSON.parse(before || '{}') as Record<string, Object>;
+      const resuming = previous['kind'] === 'maintenance' && previous['state'] === 'pending' && previous['action'] === action;
+      if (previous['kind'] === 'maintenance' && previous['state'] === 'pending' && !resuming) throw new Error('请再次执行先前的清理操作，不得扩大未完成清理范围。');
+      const stopped = status.operationState === 'reboot-confirmed' || original.phase === 'STOPPED' && terminalProven(StatusStore.readStrictText(context, OWNER_TERMINAL_FILE),
+        original.generation, 0, Date.now(), original.ownerInstance);
+      const pristine = original.phase === 'IDLE' && original.at === 0 && (before.length === 0 ||
+        previous['kind'] === 'maintenance' && previous['action'] === 'all' && previous['state'] === 'confirmed' && previous['outcome'] === 'completed');
+      if ((!stopped && !pristine && !resuming) || status.desiredRunning || status.vpnCreated || status.tunFdValid ||
+        status.xrayRunning || status.forwarderOk || status.cleanupPending || !resuming && controlBlocksStart(before))
+        throw new Error('请回首页点“恢复连接”，确认断开后再清理数据。');
+      const opRaw = StatusStore.readStrictText(context, PLATFORM_OPERATIONS_FILE);
+      if (opRaw.length > 0) {
+        const op = JSON.parse(opRaw) as Record<string, Object>;
+        if (op['schema'] !== 2 || !Array.isArray(op['operations']) ||
+          (op['operations'] as Record<string, Object>[]).some((row) => row['state'] === 'pending'))
+          throw new Error('系统操作尚未结束，未清理数据。');
+      }
+      const marker: Record<string, Object> = { 'schema': 2, 'kind': 'maintenance', 'action': action,
+        'state': 'pending', 'generation': original.generation, 'requestedAt': Date.now() };
+      StatusStore.writeText(context, CONTROL_FILE, JSON.stringify(marker));
+      return (ok: boolean): void => {
+        try {
+          marker['state'] = ok ? 'confirmed' : 'pending';
+          marker['outcome'] = ok ? 'completed' : 'interrupted';
+          StatusStore.writeText(context, CONTROL_FILE, JSON.stringify(marker));
+        } finally { StatusStore.releaseUserDataLease(lease); releaseGate(); }
+      };
+    } catch (error) {
+      if (lease > 0) StatusStore.releaseUserDataLease(lease);
+      releaseGate(); throw error as Error;
     }
+  }
+  static clearLogs(context: common.Context): ClearLogsResult {
+    const release = DataManagement.enter(context, 'logs');
+    let ok = false;
+    try { const result = DataManagement.clearLogsUnchecked(context); ok = true; return result; } finally { release(ok); }
+  }
+  static async clearNodesAndSubscriptions(context: common.Context): Promise<void> {
+    const release = DataManagement.enter(context, 'nodes');
+    let ok = false;
+    try { await DataManagement.clearNodesUnchecked(context); ok = true; } finally { release(ok); }
+  }
+  static async wipeAll(context: common.Context): Promise<void> {
+    const release = DataManagement.enter(context, 'all');
+    let ok = false;
+    try { await DataManagement.wipeAllUnchecked(context); ok = true; } finally { release(ok); }
   }
 
   static removeExportCaches(context: common.Context): void {
-    const names = StatusStore.listNames(context);
+    const names = StatusStore.listNamesStrict(context);
     for (let i = 0; i < names.length; i++) {
       const name = names[i];
       if (name.indexOf(EXPORT_PREFIX) === 0 && name.indexOf('/') < 0) {

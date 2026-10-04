@@ -201,13 +201,13 @@ struct Diagnostics {
       if (node === null) {
         this.setRow(2, STATE_FAIL, '没有可用节点', '先导入节点或添加订阅');
       } else if (current !== null && isConnectionEstablished(current, Date.now())) {
-        this.setRow(2, STATE_OK, '当前线路已建立', '目标访问在下一项单独检查；不以单次 TCP 探测替代实际连接状态。');
+        this.setRow(2, STATE_OK, '当前线路已建立', '继续看下一项的网站访问结果。');
       } else {
         const ping = await tcpConnectCanary(node.server, node.port, NODE_PING_TIMEOUT_MS);
         if (ping.ok) {
-          this.setRow(2, STATE_OK, `节点 TCP 可达（${ping.elapsedMs} 毫秒）`, '此项不代表代理登录或目标网站已可用。');
+          this.setRow(2, STATE_OK, `节点可接通（${ping.elapsedMs} 毫秒）`, '连接后可继续检查网站访问。');
         } else {
-          this.setRow(2, STATE_FAIL, '节点 TCP 探测未通过', '可能受当前网络或探测方式影响，不能仅据此判断订阅过期。');
+          this.setRow(2, STATE_FAIL, '节点暂时接不通', '先检查手机网络，再换同地区节点重试。');
         }
       }
 
@@ -388,7 +388,7 @@ struct Diagnostics {
               .width('100%').constraintSize({ minHeight: 48 })
               .enabled(!this.exporting && !this.busy)
               .onClick(() => { this.saveIncident(); })
-            Text('运行时自动记录网络变化、转发与分流计数；最多 48 小时 / 4 MiB，满后提前滚动。仅本机保存，不含聊天或访问内容。故障现场另保留最近 5 份。')
+            Text('自动记录最近的网络变化和流量情况，报告只保存在手机。')
               .fontSize(12).fontColor($r('sys.color.ohos_id_color_text_secondary'))
             Button(this.showTechnicalDetails ? '收起技术详情' : '查看技术详情')
               .onClick(() => { this.toggleTechnicalDetails(); })
@@ -437,7 +437,7 @@ struct Diagnostics {
             Button('复制当前诊断摘要').margin({ top: 12 }).enabled(!this.exporting && !this.busy)
               .onClick(() => { this.copySummary(); })
 
-            Text('完整历史请导出文件，由你决定发给谁；复制摘要只含当前状态与最近事件。已保存现场不会被后续重连改写。')
+            Text('需要排查历史问题时，点“导出诊断报告”。')
               .fontSize(12)
               .fontColor($r('sys.color.ohos_id_color_text_secondary'))
               .width('100%')

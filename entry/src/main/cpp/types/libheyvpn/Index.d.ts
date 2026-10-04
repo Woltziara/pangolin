@@ -18,6 +18,9 @@ export interface RuntimeStats {
   downloadBytes: number;
   xrayRunning: boolean;
   xrayStarting: boolean;
+  xrayOwnerSeq: number;
+  xrayStopPending: boolean;
+  protectPending: number;
   tunRunning: boolean;
   lastMessage: string;
   poisoned: boolean;
@@ -65,3 +68,10 @@ export const setProtectCallback: (cb: (fd: number, token: number) => void) => nu
 export const clearProtectCallback: () => number;
 export const claimProtectFd: (fd: number, token: number) => number;
 export const ackProtectFd: (fd: number, rc: number, token: number) => number;
+
+export const compareReplaceText: (path: string, expected: string, value: string) => NativeResult;
+export const monotonicMillis: () => number;
+export const systemBootId: () => string;
+
+export const acquireUserDataLease: (path: string) => number;
+export const releaseUserDataLease: (token: number) => boolean;

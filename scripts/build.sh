@@ -77,6 +77,7 @@ if [[ "$NATIVE_ONLY" == "1" ]]; then
 fi
 
 cd "$ROOT"
+python3 "$ROOT/scripts/build_identity.py"
 ohpm install
 hvigorw assembleHap -p product=default -p buildMode=debug --no-daemon
 HAP="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"

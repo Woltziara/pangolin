@@ -15,6 +15,25 @@ export const PHASE_STALE: string = 'STALE';
 export const PHASE_POISONED: string = 'POISONED';
 
 export class DataplaneStatus {
+  endReason: string = '';
+  buildSourceIdentity: string = '';
+  ownerInstance: string = '';
+  networkEpoch: number = 0;
+  networkState: string = 'unknown';
+  networkChangedAt: number = 0;
+  routeMode: string = 'rule';
+  channelMode: string = 'single';
+  appRoutingEnabled: boolean = false;
+  operationState: string = '';
+  operationKind: string = '';
+  operationAt: number = 0;
+  healthNetworkEpoch: number = -1;
+  healthOwnerInstance: string = '';
+  healthPolicyDigest: string = '';
+  cleanupPending: boolean = false;
+  statusMono: number = 0;
+  bootId: string = '';
+
   phase: string = PHASE_IDLE;
   honestLabel: string = '未连接';
   tunFd: number = -1;
@@ -88,7 +107,7 @@ export function honestLabelOf(status: DataplaneStatus): string {
     return '数据面可用';
   }
   if (status.phase === PHASE_DEGRADED_UNPROVEN) {
-    return '路由证据待核验，不代表连接已中断';
+    return '正在检查访问路径';
   }
   if (status.phase === PHASE_UNPROVEN) {
     return '本轮尚未完成路由证据核验';
@@ -97,7 +116,7 @@ export function honestLabelOf(status: DataplaneStatus): string {
     return '数据面降级，正在恢复';
   }
   if (status.phase === PHASE_RECONNECTING) {
-    return '正在重连，不要把它当成在线';
+    return '正在重新连接';
   }
   if (status.phase === PHASE_ERROR) {
     return '数据面失败';
@@ -124,13 +143,31 @@ export function honestLabelOf(status: DataplaneStatus): string {
     return '已停止';
   }
   if (status.phase === PHASE_STALE) {
-    return '状态过期，不能当成已断开';
+    return '正在更新连接状态';
   }
   return '未连接';
 }
 
 export function serializeStatus(status: DataplaneStatus): string {
   const record: Record<string, Object> = {};
+  record['endReason'] = status.endReason;
+  record['buildSourceIdentity'] = status.buildSourceIdentity;
+  record['ownerInstance'] = status.ownerInstance;
+  record['networkEpoch'] = status.networkEpoch;
+  record['networkState'] = status.networkState;
+  record['networkChangedAt'] = status.networkChangedAt;
+  record['routeMode'] = status.routeMode;
+  record['channelMode'] = status.channelMode;
+  record['appRoutingEnabled'] = status.appRoutingEnabled;
+  record['operationState'] = status.operationState;
+  record['operationKind'] = status.operationKind;
+  record['operationAt'] = status.operationAt;
+  record['healthNetworkEpoch'] = status.healthNetworkEpoch;
+  record['healthOwnerInstance'] = status.healthOwnerInstance;
+  record['healthPolicyDigest'] = status.healthPolicyDigest;
+  record['cleanupPending'] = status.cleanupPending;
+  record['statusMono'] = status.statusMono;
+  record['bootId'] = status.bootId;
   record['phase'] = status.phase;
   record['honestLabel'] = status.honestLabel;
   record['tunFd'] = status.tunFd;
@@ -204,6 +241,24 @@ export function parseStatus(raw: string): DataplaneStatus {
   const status = new DataplaneStatus();
   try {
     const parsed = JSON.parse(raw) as Record<string, Object>;
+    status.endReason = asString(parsed['endReason'], '');
+    status.buildSourceIdentity = asString(parsed['buildSourceIdentity'], '');
+    status.ownerInstance = asString(parsed['ownerInstance'], '');
+    status.networkEpoch = asNumber(parsed['networkEpoch'], 0);
+    status.networkState = asString(parsed['networkState'], 'unknown');
+    status.networkChangedAt = asNumber(parsed['networkChangedAt'], 0);
+    status.routeMode = asString(parsed['routeMode'], 'rule');
+    status.channelMode = asString(parsed['channelMode'], 'single');
+    status.appRoutingEnabled = asBool(parsed['appRoutingEnabled']);
+    status.operationState = asString(parsed['operationState'], '');
+    status.operationKind = asString(parsed['operationKind'], '');
+    status.operationAt = asNumber(parsed['operationAt'], 0);
+    status.healthNetworkEpoch = asNumber(parsed['healthNetworkEpoch'], -1);
+    status.healthOwnerInstance = asString(parsed['healthOwnerInstance'], '');
+    status.healthPolicyDigest = asString(parsed['healthPolicyDigest'], '');
+    status.cleanupPending = asBool(parsed['cleanupPending']);
+    status.statusMono = asNumber(parsed['statusMono'], 0);
+    status.bootId = asString(parsed['bootId'], '');
     status.phase = asString(parsed['phase'], PHASE_IDLE);
     status.honestLabel = asString(parsed['honestLabel'], '未连接');
     status.tunFd = asNumber(parsed['tunFd'], -1);
@@ -292,7 +347,7 @@ function asString(value: Object | undefined, fallback: string): string {
 }
 
 function asNumber(value: Object | undefined, fallback: number): number {
-  if (typeof value === 'number') {
+  if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
   }
   return fallback;

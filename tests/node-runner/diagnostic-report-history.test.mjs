@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
@@ -14,7 +15,7 @@ const fs={OpenMode:{WRITE_ONLY:1,CREATE:2,APPEND:4},accessSync:p=>files.has(base
  fsyncSync(){},closeSync:f=>handles.delete(f),unlinkSync:p=>files.delete(basename(p)),
  renameSync(a,b){files.set(basename(b),files.get(basename(a)));files.delete(basename(a));}};
 function load(src,deps){const module={exports:{}};vm.runInNewContext(ts.transpileModule(src,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,
- {module,exports:module.exports,Date:clock,JSON,Array,Object,Math,Number,isFinite,console,require(n){if(!(n in deps))throw Error(n);return deps[n];}});return module.exports;}
+ {module,exports:module.exports,Date:clock,JSON,Array,Object,Math,Number,isFinite,console,require(n){if(!(n in deps)){const b=legacyBoundary(n);if(b!==undefined)return b;throw Error(n);}return deps[n];}});return module.exports;}
 const J=load(source('services/RuntimeJournal.ets'),{'@kit.CoreFileKit':{fileIo:fs}}).RuntimeJournal;
 let status={generation:'1800000000000',sessionRevision:1,phase:'UNPROVEN',at:now,vpnCreated:true,xrayRunning:true,payloadDigest:'12345678',
  lastCanary:'Google health=foreign.private.invalid direct=203.0.113.28:443',lastError:'connect [2001:db8::1234]:443 failed'};
@@ -28,6 +29,7 @@ const ledger={generation:status.generation,seq:70,events:Array.from({length:70},
  direct:{message:'lookup foreign.private.invalid at 203.0.113.28:443 failed'},lastCanary:status.lastCanary}))};
 const Store={readStatus:()=>status,readText:(_c,n)=>files.get(n)||'',writeText(_c,n,v){files.set(n,v);},listNames:()=>[...files.keys()],removeFile:(_c,n)=>files.delete(n)};
 const D=load(source('services/DiagnosticReport.ets'),{
+ './SystemExitEvidence':{SystemExitEvidence:{read:()=>[{eventName:'APP_KILLED',time:now-1000,reason:'LowMemoryKill'}]}},
  '../core/UserFacingCopy':{redactDiagnosticText:t=>t},'./UiFeedback':{UI_FEEDBACK_FILE:'ui-feedback.json'},
  '@kit.AbilityKit':{bundleManager:{BundleFlag:{GET_BUNDLE_INFO_DEFAULT:1},async getBundleInfoForSelf(){return {versionName:'fixture'};}}},
  './EventStore':{EventStore:{load:()=>ledger}},'./NodeStore':{NodeStore:{maskEndpointAddress:()=> 'masked'}},
@@ -35,6 +37,7 @@ const D=load(source('services/DiagnosticReport.ets'),{
 }).DiagnosticReport;
 let report=await D.build(ctx,[{name:'DNS',ok:false,skipped:false,verdict:'lookup foreign.private.invalid failed',advice:'203.0.113.28:443 timeout'}]);
 assert.equal(report.runtimeJournal.count,2);assert.equal(report.runtimeSnapshot['n.protectTimeout'],3);
+assert.equal(report.systemExitEvents[0].reason,'LowMemoryKill');
 assert.equal(report.runtimeSnapshot['n.hev.rxErrors'],2);assert.equal(report.runtimeSnapshot['n.appRouting.ownerQueryFailed'],5);
 assert.equal(report.runtimeSnapshot['n.protectDiagnostics.apiRejected'],7);
 assert.equal(report.events.length,50);assert.equal(report.eventWindow.available,70);

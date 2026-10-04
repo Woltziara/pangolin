@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -12,7 +13,7 @@ function load(path, deps) {
     target: ts.ScriptTarget.ES2020 } }).outputText;
   const module = { exports: {} };
   vm.runInNewContext(js, { module, exports: module.exports, Date, Set, Map, setTimeout, clearTimeout,
-    require(name) { if (!(name in deps)) throw Error('Unexpected import ' + name); return deps[name]; } });
+    require(name) { if (!(name in deps)) {const b=legacyBoundary(name);if(b!==undefined)return b;throw Error('Unexpected import '+name);} return deps[name]; } });
   return module.exports;
 }
 const node = name => ({ protocol: 'trojan', settings: { servers: [{ address: name + '.example', port: 443, password: 'fixture' }] },

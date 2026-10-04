@@ -16,6 +16,7 @@ const module={exports:{}};vm.runInNewContext(ts.transpileModule(storeSource,{com
  module,exports:module.exports,console,require(n){
   if(n==='@kit.ArkTS')return {util:{generateRandomUUID(){return String(++ids);}}};
   if(n==='./StatusStore')return {StatusStore:{readJsonFile(){return disk;},writeJsonAtomic(_c,_f,v){disk=v;}}};
+  if(n==='./Revocations')return {Revocations:{revoke(){}}};
   throw Error(n);
  }
 });

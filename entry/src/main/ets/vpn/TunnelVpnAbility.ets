@@ -1,3 +1,10 @@
+import { BuildIdentity } from '../services/BuildIdentity';
+import { Revocations } from '../services/Revocations';
+import { DEBUG_ACCESS } from '../core/CoreInfo';
+import { deadline } from '../services/AsyncDeadline';
+import { RunningSnapshot, RecoverySnapshot } from '../services/RunningSnapshot';
+import { LayerEvidence, LAYERS_FILE, BUSINESS_FILE } from '../net/LayerEvidence';
+import { OWNER_TERMINAL_FILE, CONTROL_FILE, controlAllowsStart, terminalProven } from '../net/OwnerTerminal';
 import { AppliedPolicy } from '../services/AppliedPolicy';
 import { AppRouteRuntime } from '../services/AppRouteRuntime';
 import { RuntimeJournal } from '../services/RuntimeJournal';
@@ -9,7 +16,7 @@ import { NODE_LATENCY_TEST } from '../services/NodeLatencyTest';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { connection, vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
-import { util } from '@kit.ArkTS';
+import { util, process } from '@kit.ArkTS';
 import Want from '@ohos.app.ability.Want';
 import { buildHevTunConfigYaml } from '../core/HevTunConfig';
 import { buildRuntimeXrayConfig, NODE_META_FILE, newSocksSession, parseNodeMeta, SocksSession } from '../core/XrayRuntime';
@@ -47,7 +54,9 @@ import {
   startNativeXray,
   stopNativeHevTun,
   stopNativeXray,
-  stopNativeXrayOwned
+  stopNativeXrayOwned,
+  systemBootId,
+  monotonicMillis
 } from '../native/TunnelNative';
 import { EventStore } from '../services/EventStore';
 import { HuksSecretStore } from '../services/HuksSecretStore';
@@ -74,12 +83,21 @@ import {
 const LOG_DOMAIN: number = 0x3200;
 const LOG_TAG: string = 'TunnelVpn';
 const BROWSER_BUNDLE: string = 'com.huawei.hmos.browser';
-const CANARY_INTERVAL_MS: number = 480000;
+const CANARY_INTERVAL_MS: number = 120000;
 const SUPERVISOR_INTERVAL_MS: number = 15000;
 const CANARY_FAIL_LIMIT: number = 3;
 const NODE_FAIL_LIMIT: number = 2;
 const CORE_RESTART_LIMIT: number = 2;
 const PROBE_GRACE_MS: number = 20000;
+
+class DestroyOperation {
+  connection: vpnExtension.VpnConnection;
+  generation: string;
+  promise: Promise<void>;
+  constructor(connection: vpnExtension.VpnConnection, generation: string, promise: Promise<void>) {
+    this.connection = connection; this.generation = generation; this.promise = promise;
+  }
+}
 
 class VpnCommand {
   token: number = 0;
@@ -88,11 +106,14 @@ class VpnCommand {
   mode: string = MODE_FULL;
   outboundTrace: boolean = false;
   nodeSystemDns: boolean = true;
+  recoverySnapshotId: string = '';
+  controlIntentId: string = '';
 }
 
 export default class TunnelVpnAbility extends VpnExtensionAbility {
   private vpnConnection: vpnExtension.VpnConnection | null = null;
   private tunFd: number = -1;
+  private pendingCreates: number = 0;
   private cleaningUp: boolean = false;
   private canaryTimerId: number = -1;
   private supervisorTimerId: number = -1;
@@ -103,9 +124,14 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private ytFailoverLocked: boolean = false;
   private usFailoverLocked: boolean = false;
   private coreRestarts: number = 0;
+  private automaticRecoveries: number = 0;
+  private recoveryWindowAt: number = 0;
   private lastTunRx: number = 0;
   private polling: boolean = false;
   private generation: string = '';
+  private ownerInstance: string = util.generateRandomUUID();
+  private allocatedSession: boolean = false;
+  private stopRecoveryTimer: number = -1;
   private mode: string = MODE_FULL;
   private socks: SocksSession = new SocksSession();
   private appRoutes: AppRouteRuntime | null = null;
@@ -119,6 +145,9 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private outboundTrace: boolean = false;
   private nodeSystemDns: boolean = true;
   private networkWasLost: boolean = false;
+  private networkRefreshPending: boolean = false;
+  private networkRecoverTimer: number = -1;
+  private acceptedNetWatchEpoch: number = 0;
   private lastAvailableNetId: number = -1;
   private addressRefreshAttempted: boolean = false;
   private observedHealthAt: number = 0;
@@ -141,6 +170,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private latestCommand: VpnCommand | null = null;
   private committedToken: number = 0;
   private destroyInFlight: boolean = false;
+  // Retain the actual operation after a UI deadline. A deadline is not cancellation.
+  private pendingDestroy: DestroyOperation | null = null;
   // Phase C：故障切换用户开关。在 startTunnel 读取一次并缓存整个会话，
   // 不在 canary 周期里反复读盘——canary/恢复时序经过 soak 验证，中途插入
   // 文件 IO 有 timing 风险；因此开关切换对下一次连接生效（设置页有说明）。
@@ -153,12 +184,17 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private lastLineHealthOk: boolean = false;
   private lastLineHealthBOk: boolean = false;
   private failoverGroup: string = '';
+  private recoverySnapshotId: string = '';
+  private controlIntentId: string = '';
+  private recoveryIntent: Record<string, Object> | null = null;
+  private layers: LayerEvidence = new LayerEvidence();
 
   onCreate(want: Want): void {
     // A diagnostic request must never start or restart a stopped VPN.
     if (this.wantString(want, VPN_COMMAND_KEY, '').startsWith('diagnose-')) {
       return;
     }
+    if (!this.isStopCommand(want) && this.rejectLateUiStart(want)) return;
     this.cancelled = false;
     this.recoverInFlight = false;
     this.startInFlight = false;
@@ -170,15 +206,24 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     this.status.sessionRevision = 1;
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onCreate gen=%{public}s mode=%{public}s', this.generation, this.mode);
     if (this.isStopCommand(want)) {
-      this.enqueue('stop', this.wantString(want, VPN_GENERATION_KEY, this.generation), this.mode);
+      // A newly created process has no authority to attest a previous owner's resources.
       return;
     }
     this.enqueue('start', this.generation, this.mode, this.wantString(want, 'outboundTrace', '') === 'true',
-      this.wantString(want, 'nodeSystemDns', 'true') !== 'false');
+      this.wantString(want, 'nodeSystemDns', 'true') !== 'false',
+      this.wantString(want, 'recoverySnapshotId', ''), this.wantString(want, 'controlIntentId', ''));
   }
 
   onRequest(want: Want, startId: number): void {
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onRequest %{public}d', startId);
+    if (this.wantString(want, VPN_COMMAND_KEY, '') === 'diagnose-process-visibility') {
+      const nonce = this.wantString(want, 'recoveryNonce', '');
+      const proof: Record<string, Object> = { 'nonce': nonce, 'pid': process.pid,
+        'empty': !this.allocatedSession, 'generation': this.generation,
+        'ownerInstance': this.ownerInstance, 'at': Date.now() };
+      if (nonce.length > 0) StatusStore.writeText(this.context, 'owner-visibility.json', JSON.stringify(proof));
+      return;
+    }
     if (this.wantString(want, VPN_COMMAND_KEY, '') === 'diagnose-node-latency') {
       const generation = this.wantString(want, VPN_GENERATION_KEY, '');
       if (generation === this.generation && this.desiredRunning && !this.cleaningUp) {
@@ -191,19 +236,23 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       const requestedGeneration = this.wantString(want, 'statusGeneration', '');
       if (this.generation.length > 0) {
         if (this.generation === requestedGeneration) { this.forcePublish(); }
-      } else {
-        const stats = getNativeStats();
-        const previous = StatusStore.readStatus(this.context);
-        const requestedAt = Number(this.wantString(want, 'statusAt', '0'));
-        if (!stats.xrayRunning && !stats.tunRunning && previous.generation === requestedGeneration &&
-          previous.at === requestedAt && requestedAt > 0) {
-          this.generation = previous.generation;
-          this.status = previous;
-          this.desiredRunning = false;
-          this.resetPlaneTruth();
-          this.status.phase = PHASE_STOPPED;
-          this.forcePublish();
-        }
+      }
+      // No in-memory generation means this process cannot attest the prior
+      // owner's resources. Preserve the old record; UI displays unconfirmed.
+      return;
+    }
+    if (this.wantString(want, VPN_COMMAND_KEY, '') === 'diagnose-traffic-sample') {
+      if (this.wantString(want, VPN_GENERATION_KEY, '') === this.generation && this.desiredRunning &&
+        !this.cancelled && !this.cleaningUp && this.status.sessionRevision > 0) {
+        try {
+          const stats = getNativeStats();
+          if (stats.xrayRunning && stats.tunRunning) {
+            const sample: Record<string, Object> = { 'schema': 1, 'generation': this.generation,
+              'ownerInstance': this.ownerInstance, 'revision': this.status.sessionRevision,
+              'at': Date.now(), 'uploadBytes': stats.uploadBytes, 'downloadBytes': stats.downloadBytes };
+            StatusStore.writeText(this.context, 'traffic-sample.json', JSON.stringify(sample));
+          }
+        } catch (_error) { /* Optional foreground display must not alter the VPN owner. */ }
       }
       return;
     }
@@ -262,22 +311,33 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       return;
     }
     if (this.isStopCommand(want)) {
-      this.enqueue('stop', this.wantString(want, VPN_GENERATION_KEY, this.generation), this.mode);
+      if (!this.allocatedSession || this.generation.length === 0) return;
+      this.enqueue('stop', this.wantString(want, VPN_GENERATION_KEY, ''), this.mode);
       return;
     }
+    if (this.rejectLateUiStart(want)) return;
     const generation = this.wantString(want, VPN_GENERATION_KEY,
       this.generation.length > 0 ? this.generation : Date.now().toString());
     const mode = this.wantString(want, VPN_MODE_KEY, MODE_FULL);
     this.enqueue('start', generation, mode, this.wantString(want, 'outboundTrace', '') === 'true',
-      this.wantString(want, 'nodeSystemDns', 'true') !== 'false');
+      this.wantString(want, 'nodeSystemDns', 'true') !== 'false',
+      this.wantString(want, 'recoverySnapshotId', ''), this.wantString(want, 'controlIntentId', ''));
   }
 
   private enqueue(kind: string, generation: string, mode: string, outboundTrace: boolean = false,
-    nodeSystemDns: boolean = true): void {
+    nodeSystemDns: boolean = true, recoverySnapshotId: string = '', controlIntentId: string = ''): void {
+    // Admission MUST precede epoch, desired state and cancellation mutations.
+    // A stop for A is not authority over B, including while B is starting.
+    if (kind === 'stop' && generation.length > 0 && this.generation.length > 0 &&
+      generation !== this.generation) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'rejected stale stop before mutation');
+      return;
+    }
     const dns = !outboundTrace || nodeSystemDns;
     if (kind === 'start' && this.latestCommand !== null && this.latestCommand.kind === 'start' &&
       this.latestCommand.generation === generation && this.latestCommand.mode === mode &&
-      this.latestCommand.outboundTrace === outboundTrace && this.latestCommand.nodeSystemDns === dns) {
+      this.latestCommand.outboundTrace === outboundTrace && this.latestCommand.nodeSystemDns === dns &&
+      this.latestCommand.recoverySnapshotId === recoverySnapshotId && this.latestCommand.controlIntentId === controlIntentId) {
       hilog.info(LOG_DOMAIN, LOG_TAG, 'ignore duplicate start command gen=%{public}s token=%{public}d',
         generation, this.latestCommand.token);
       return;
@@ -290,6 +350,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     cmd.mode = mode;
     cmd.outboundTrace = outboundTrace;
     cmd.nodeSystemDns = dns;
+    cmd.recoverySnapshotId = recoverySnapshotId;
+    cmd.controlIntentId = controlIntentId;
     this.latestCommand = cmd;
     this.status.commandEpoch = cmd.token;
     this.dispatchLatest();
@@ -334,17 +396,19 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
           cmd.generation, this.generation);
         return;
       }
-      const alreadyDown = !this.status.vpnCreated && this.tunFd < 0 &&
-        (this.status.phase === PHASE_STOPPED || this.status.phase === PHASE_ERROR ||
-          this.status.phase === PHASE_POISONED);
+      const alreadyDown = this.status.phase === PHASE_STOPPED && !this.status.vpnCreated &&
+        this.tunFd < 0 && this.vpnConnection === null && this.pendingDestroy === null &&
+        this.pendingCreates === 0;
       this.desiredRunning = false;
       this.pendingStart = false;
       this.pendingGeneration = '';
       this.pendingMode = '';
       this.status.desiredRunning = false;
       if (alreadyDown && !this.cleaningUp) {
-        hilog.info(LOG_DOMAIN, LOG_TAG, 'stop token already applied');
-        return;
+        if (terminalProven(StatusStore.readText(this.context, OWNER_TERMINAL_FILE), this.generation, 0, Date.now(), this.ownerInstance)) {
+          hilog.info(LOG_DOMAIN, LOG_TAG, 'stop token already applied'); return;
+        }
+        this.requestCleanup('retry missing terminal receipt', this.generation); return;
       }
       this.requestCleanup('stop command', this.generation);
       return;
@@ -366,6 +430,10 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private beginSession(generation: string, mode: string, token: number): void {
+    this.allocatedSession = true;
+    this.status.ownerInstance = this.ownerInstance;
+    this.automaticRecoveries = 0; this.recoveryWindowAt = Date.now();
+    this.status.networkEpoch += 1; this.status.networkState = 'unknown'; this.status.networkChangedAt = Date.now();
     this.networkWasLost = false;
     this.lastAvailableNetId = -1;
     this.addressRefreshAttempted = false;
@@ -376,6 +444,14 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       this.latestCommand.outboundTrace;
     this.nodeSystemDns = this.latestCommand !== null && this.latestCommand.token === token &&
       this.latestCommand.nodeSystemDns;
+    this.recoverySnapshotId = this.latestCommand !== null && this.latestCommand.token === token ? this.latestCommand.recoverySnapshotId : '';
+    this.controlIntentId = this.latestCommand !== null && this.latestCommand.token === token ? this.latestCommand.controlIntentId : '';
+    if (!controlAllowsStart(StatusStore.readText(this.context, CONTROL_FILE), generation, this.controlIntentId)) {
+      this.parkStop(this.generation); return;
+    }
+    this.recoveryIntent = null;
+    this.layers = new LayerEvidence();
+    this.status.endReason = '';
     this.status.connectionHealth = '';
     this.status.lastReachableAt = 0;
     this.status.healthCheckedAt = 0;
@@ -413,6 +489,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     // System may destroy this ability without waiting for async cleanup.
     // Cancel is recorded immediately; native stop completion is not proven here.
     hilog.info(LOG_DOMAIN, LOG_TAG, 'onDestroy');
+    if (!this.allocatedSession) return;
     this.desiredRunning = false;
     this.status.desiredRunning = false;
     this.cancelled = true;
@@ -439,7 +516,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private guard(gen: string, rev: number, socksPort: number, where: string): boolean {
-    if (this.cancelled || this.cleaningUp || !this.desiredRunning) {
+    if (this.cancelled || this.cleaningUp || !this.desiredRunning ||
+      !controlAllowsStart(StatusStore.readText(this.context, CONTROL_FILE), this.generation, this.controlIntentId)) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'stale %{public}s cancelled', where);
       return false;
     }
@@ -474,7 +552,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     this.status.probePending = true;
     this.status.selfProbe = true;
     this.status.probeGoogleUrl = `http://www.google.com/generate_204?rid=${rid}`;
-    this.status.probeDirectUrl = `https://www.qq.com/?rid=${rid}`;
+    this.status.probeDirectUrl = `https://www.baidu.com/robots.txt?rid=${rid}`;
     this.status.probeIssuedAt = Date.now();
     this.status.fetchGoogleHttp = 0;
     this.status.fetchDirectHttp = 0;
@@ -609,6 +687,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     this.status.lastReachableAt = 0;
     this.status.healthCheckedAt = 0;
     this.status.healthLastOutcome = '';
+    this.layers.reset(this.generation, this.status.sessionRevision);
     this.refreshCounters();
     this.status.lastSampleTunRx = this.status.tunRxBytes;
     this.status.lastSampleTunTx = this.status.tunTxBytes;
@@ -684,7 +763,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       return false;
     }
     const counters = this.mergeTunCounters();
-    if (StatusStore.readText(this.context, 'oracle-hold.json').length > 2) {
+    if (DEBUG_ACCESS && StatusStore.readText(this.context, 'oracle-hold.json').length > 2) {
       return false;
     }
     if (!this.status.probePending || this.status.probeGoogleUrl.length < 8) {
@@ -730,12 +809,18 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private applyLiveEvidence(): void {
+    // User-facing health is based on scoped requests, never access-log text.
     // Remember an actual failure/success before the strict audit rolls its RID.
     updateConnectionHealth(this.status, StatusStore.readText(this.context, 'probe-fetch.json'),
       BUNDLE_NAME, Date.now());
     if (this.status.phase === PHASE_RECONNECTING || this.status.phase === PHASE_ERROR ||
       this.status.phase === PHASE_STOPPED) {
       this.status.canaryOk = false;
+      return;
+    }
+    if (!DEBUG_ACCESS) {
+      this.status.canaryOk = false;
+      this.status.phase = PHASE_FORWARDER_RUNNING;
       return;
     }
     const fresh = this.hasFreshPlaneEvidence();
@@ -812,11 +897,24 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       // Phase C：会话开始时读一次故障切换设置；缺省（无 settings.json）= 开启，
       // 与 Phase C 之前行为一致。
       const userSettings = SettingsStore.load(this.context);
-      this.failoverEnabled = CONNECTION_POLICY.autoFailoverEnabled(this.context);
+      const recoveryIntent: Record<string, Object> = {};
+      recoveryIntent['authorizedRevision'] = Revocations.revision(this.context);
+      recoveryIntent['singleNodeId'] = userSettings.singleNodeId;
+      recoveryIntent['chatgptNodeId'] = userSettings.chatgptNodeId;
+      recoveryIntent['generalNodeId'] = userSettings.generalNodeId;
+      recoveryIntent['failoverEnabled'] = userSettings.failoverEnabled;
+      this.recoveryIntent = recoveryIntent;
+      this.failoverEnabled = this.recoverySnapshotId.length > 0 ? false : CONNECTION_POLICY.autoFailoverEnabled(this.context);
       this.failoverGroup = userSettings.failoverGroup;
       this.socks = newSocksSession();
       const socksPort = this.socks.port;
 
+      let recovery: RecoverySnapshot | null = null;
+      if (this.recoverySnapshotId.length > 0) {
+        recovery = await RunningSnapshot.read(this.context, this.recoverySnapshotId);
+        if (!this.guard(gen, rev, socksPort, 'recovery-snapshot')) return;
+        this.recoveryIntent = recovery.intent;
+      }
       this.vpnConnection = vpnExtension.createVpnConnection(this.context);
       const conn = this.vpnConnection;
       try {
@@ -833,12 +931,17 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         return;
       }
 
-      this.outboundJson = await HuksSecretStore.readOutbound(this.context);
-      this.outboundJson = CONNECTION_POLICY.enforcePayload(this.context, this.outboundJson);
+      this.outboundJson = recovery !== null ? recovery.payload : await HuksSecretStore.readOutbound(this.context);
+      if (recovery === null) this.outboundJson = CONNECTION_POLICY.enforcePayload(this.context, this.outboundJson);
       if (!this.guard(gen, rev, socksPort, 'huks')) {
         this.requestCleanup('stale after huks', gen);
         return;
       }
+      const activePolicy = JSON.parse(this.outboundJson) as Record<string, Object>;
+      this.status.routeMode = typeof activePolicy['routeMode'] === 'string' ? activePolicy['routeMode'] as string : 'rule';
+      this.status.channelMode = activePolicy['channelMode'] === 'dual' ? 'dual' : 'single';
+      const appPolicy = activePolicy['appRouting'] as Record<string, Object>;
+      this.status.appRoutingEnabled = appPolicy !== undefined && appPolicy !== null && appPolicy['enabled'] === true;
       if (this.outboundJson.length < 20) {
         throw new Error('没有可运行的节点配置。请先导入节点。安装包不含节点密码。');
       }
@@ -894,7 +997,10 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       const config = createTunnelVpnConfig(trusted);
       this.createEpoch += 1;
       const epoch = this.createEpoch;
-      const localFd = await conn.create(config);
+      this.pendingCreates += 1;
+      let localFd = -1;
+      try { localFd = await conn.create(config); }
+      finally { this.pendingCreates -= 1; }
       if (localFd < 0) {
         this.status.tunFd = -1;
         this.status.tunFdValid = false;
@@ -906,12 +1012,12 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       if (this.cancelled || this.cleaningUp || this.generation !== gen || epoch !== this.createEpoch ||
         capturedEpoch !== this.committedToken || !this.desiredRunning) {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'late tun create, destroying orphan via local handle');
-        this.vpnConnection = null;
+        // Keep the original handle until its real completion, even after timeout.
         try {
           await this.destroyBounded(conn, 4000);
         } catch (error) {
           this.failClosed('拆除孤儿隧道失败', this.errorMessage(error));
-          this.destroyInFlight = true;
+          this.destroyInFlight = this.pendingDestroy !== null;
           this.desiredRunning = false;
           this.status.desiredRunning = false;
           this.tripBreaker('orphan-destroy-timeout');
@@ -959,15 +1065,16 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       this.captureBaseline();
       this.issueSelfProbe();
       this.publish();
+      await this.saveRecoverySnapshot(gen, this.status.sessionRevision);
+      if (!this.guard(gen, rev, this.socks.port, 'snapshot-save')) return;
 
+      this.startSupervisor(); this.startNetWatch();
       await this.runCanaryCycle();
       if (!this.guard(gen, this.status.sessionRevision, this.socks.port, 'first-canary')) {
         this.requestCleanup('stale after first canary', gen);
         return;
       }
       this.startCanaryTimer();
-      this.startSupervisor();
-      this.startNetWatch();
       this.publish();
       const started: Record<string, Object> = {};
       this.emit('session-start', started);
@@ -1000,6 +1107,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private startCanaryTimer(): void {
     this.stopCanaryTimer();
     this.canaryTimerId = setInterval(() => {
+      if (this.startInFlight || this.recoverInFlight) return;
       this.runCanaryCycle().catch((error: Object) => {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'canary cycle %{public}s', this.errorMessage(error));
       });
@@ -1035,7 +1143,11 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       ackProtectFd(fd, -1, token);
       return;
     }
-    conn.protect(fd).then(() => {
+    let protection: Promise<void>;
+    try { protection = conn.protect(fd); } catch (_error) {
+      this.countProtect('apiRejected'); ackProtectFd(fd, -1, token); return;
+    }
+    protection.then(() => {
       this.countProtect('apiSucceeded');
       ackProtectFd(fd, 0, token);
     }).catch((error: Object) => {
@@ -1050,6 +1162,19 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
 
   private countProtect(key: string): void {
     this.protectDiagnostics[key] = (this.protectDiagnostics[key] as number) + 1;
+  }
+
+  // Keep the ArkTS loop available while real platform promises settle. A
+  // deadline is not permission to ACK/close a borrowed descriptor.
+  private async drainProtect(): Promise<boolean> {
+    const until = Date.now() + 2500;
+    while (Date.now() < until) {
+      const stats = getNativeStats();
+      if (stats.protectPending === 0) return true;
+      if (stats.poisoned) return false;
+      await new Promise<void>((resolve: () => void) => { setTimeout(resolve, 50); });
+    }
+    return getNativeStats().protectPending === 0;
   }
 
   private clearProtectBridge(): void {
@@ -1085,6 +1210,12 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       return;
     }
     const stats = getNativeStats();
+    if (stats.poisoned) {
+      this.status.nativePoisoned = true;
+      this.parkStop(this.generation);
+      this.requestCleanup('native-protect-quarantined', this.generation);
+      return;
+    }
     this.refreshCounters();
     this.publishAccessSlice();
     this.applyLiveEvidence();
@@ -1118,15 +1249,16 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private startNetWatch(): void {
     this.stopNetWatch();
     const conn = connection.createNetConnection();
+    const epoch = ++this.acceptedNetWatchEpoch;
     this.netConn = conn;
     conn.on('netLost', (handle: Object) => {
-      this.onNetEvent('lost', handle);
+      if (epoch === this.acceptedNetWatchEpoch) this.onNetEvent('lost', handle);
     });
     conn.on('netUnavailable', () => {
-      this.onNetEvent('unavailable', null);
+      if (epoch === this.acceptedNetWatchEpoch) this.onNetEvent('unavailable', null);
     });
     conn.on('netAvailable', (handle: Object) => {
-      this.onNetEvent('available', handle);
+      if (epoch === this.acceptedNetWatchEpoch) this.onNetEvent('available', handle);
     });
     conn.register((error: BusinessError) => {
       if (error !== undefined && error.message !== undefined && error.message.length > 0) {
@@ -1136,6 +1268,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private stopNetWatch(): void {
+    this.acceptedNetWatchEpoch += 1;
+    if (this.networkRecoverTimer >= 0) { clearTimeout(this.networkRecoverTimer); this.networkRecoverTimer = -1; }
     const conn = this.netConn;
     this.netConn = null;
     if (conn === null) {
@@ -1156,6 +1290,18 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     if (this.cancelled || this.cleaningUp) {
       return;
     }
+    let eventNetId = -1;
+    if (handle !== null && typeof (handle as Record<string, Object>)['netId'] === 'number') eventNetId = (handle as Record<string, Object>)['netId'] as number;
+    if (kind === 'lost' && eventNetId >= 0 && this.lastAvailableNetId >= 0 && eventNetId !== this.lastAvailableNetId) return;
+    if (kind === 'available' && eventNetId >= 0 && eventNetId === this.lastAvailableNetId && !this.networkWasLost) return;
+    // An observed topology change invalidates every old success, even inside an active recovery.
+    this.status.networkEpoch += 1;
+    this.status.networkChangedAt = Date.now();
+    this.status.networkState = kind === 'available' ? 'available' : 'unavailable';
+    this.status.lastReachableAt = 0; this.status.healthCheckedAt = 0; this.status.healthLastOutcome = '';
+    this.status.connectionHealth = kind === 'available' ? 'checking' : 'network-unavailable';
+    this.status.probeIssuedAt = Date.now();
+    this.layers.noteBearer(kind, Date.now());
     hilog.warn(LOG_DOMAIN, LOG_TAG, 'net event %{public}s', kind);
     if (kind === 'lost' || kind === 'unavailable') {
       this.networkWasLost = true;
@@ -1184,8 +1330,20 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       this.emit('net', extra);
       if (netId >= 0) { this.lastAvailableNetId = netId; }
       this.networkWasLost = false;
-      if (needsRefresh) { this.requestRecover('netAvailable'); }
+      this.publish();
+      if (needsRefresh) { this.networkRefreshPending = true; this.scheduleNetworkRecovery(); }
     }
+  }
+
+  private scheduleNetworkRecovery(): void {
+    if (this.networkRecoverTimer >= 0) clearTimeout(this.networkRecoverTimer);
+    const gen = this.generation;
+    this.networkRecoverTimer = setTimeout(() => {
+      this.networkRecoverTimer = -1;
+      if (this.generation !== gen || this.cancelled || !this.desiredRunning || this.status.networkState === 'unavailable') return;
+      if (this.startInFlight || this.recoverInFlight || this.cleaningUp) { this.scheduleNetworkRecovery(); return; }
+      if (this.networkRefreshPending) { this.networkRefreshPending = false; this.requestRecover('latest-network'); }
+    }, 750);
   }
 
   private requestRecover(reason: string): void {
@@ -1194,6 +1352,12 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         reason, this.cancelled ? '1' : '0', this.recoverInFlight ? '1' : '0');
       return;
     }
+    const now = Date.now();
+    if (now - this.recoveryWindowAt >= 300000) { this.recoveryWindowAt = now; this.automaticRecoveries = 0; }
+    if (this.automaticRecoveries >= 2) {
+      this.status.lastError = '自动恢复已暂停，请手动重新连接当前线路；未换节点。'; this.publish(); return;
+    }
+    this.automaticRecoveries += 1;
     const gen = this.generation;
     this.recover().catch((error: Object) => {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'recover %{public}s %{public}s', reason, this.errorMessage(error));
@@ -1202,7 +1366,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private async runCanaryCycle(): Promise<void> {
-    if (this.cleaningUp || this.polling || this.cancelled) {
+    if (this.cleaningUp || this.polling || this.cancelled || this.status.networkState === 'unavailable') {
       return;
     }
     this.polling = true;
@@ -1215,7 +1379,9 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       this.refreshCounters();
       this.publishAccessSlice();
 
-      const direct = await socksHttpCanary(
+      const networkEpoch = this.status.networkEpoch;
+      const results = await Promise.all([
+        socksHttpCanary(
         this.socks.host,
         this.socks.port,
         'www.baidu.com',
@@ -1225,11 +1391,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         6000,
         this.socks.user,
         this.socks.pass
-      );
-      if (!this.guard(gen, rev, socksPort, 'canary-direct')) {
-        return;
-      }
-      const proxy = await socksHttpCanary(
+      ),
+        socksHttpCanary(
         this.socks.host,
         this.socks.port,
         'www.google.com',
@@ -1239,11 +1402,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         8000,
         this.socks.user,
         this.socks.pass
-      );
-      if (!this.guard(gen, rev, socksPort, 'canary-proxy')) {
-        return;
-      }
-      const yt = await socksHttpCanary(
+      ),
+        socksHttpCanary(
         this.socks.host,
         this.socks.port,
         'www.youtube.com',
@@ -1253,11 +1413,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         8000,
         this.socks.user,
         this.socks.pass
-      );
-      if (!this.guard(gen, rev, socksPort, 'canary-yt')) {
-        return;
-      }
-      const lineHealth = await socksHttpCanary(
+      ),
+        socksHttpCanary(
         this.socks.host,
         this.socks.port,
         LINE_HEALTH_HOST,
@@ -1267,11 +1424,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         8000,
         this.socks.user,
         this.socks.pass
-      );
-      if (!this.guard(gen, rev, socksPort, 'canary-line-health')) {
-        return;
-      }
-      const lineHealthB = await socksHttpCanary(
+      ),
+        socksHttpCanary(
         this.socks.host,
         this.socks.port,
         LINE_HEALTH_HOST_B,
@@ -1281,10 +1435,15 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         8000,
         this.socks.user,
         this.socks.pass
-      );
-      if (!this.guard(gen, rev, socksPort, 'canary-line-health-b')) {
-        return;
-      }
+      )
+      ]);
+      if (networkEpoch !== this.status.networkEpoch || !this.guard(gen, rev, socksPort, 'parallel-canary')) return;
+      const direct = results[0];
+      const proxy = results[1];
+      const yt = results[2];
+      const lineHealth = results[3];
+      const lineHealthB = results[4];
+      this.layers.noteSocks(direct.ok && proxy.ok && yt.ok, Date.now());
       this.lastGoogleOk = proxy.ok;
       this.lastYoutubeOk = yt.ok;
       this.lastLineHealthOk = lineHealth.ok;
@@ -1306,7 +1465,6 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       if (direct.ok && proxy.ok && yt.ok && nativeLive) {
         this.coreRestarts = 0;
         this.addressRefreshAttempted = false;
-        this.healthFailureReceipts = 0;
         this.clearOrdinaryBreaker();
       }
       let nativeRecover = false;
@@ -1328,7 +1486,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
           legShouldPromote(this.generalLeg, NODE_FAIL_LIMIT);
         const swapProxy = runtimeMayPromoteBackup(this.failoverEnabled, this.usFailoverLocked) &&
           legShouldPromote(this.proxyLeg, NODE_FAIL_LIMIT);
-        if (this.nodeSystemDns && (!proxy.ok || !yt.ok) && !this.startInFlight && !this.addressRefreshAttempted) {
+        if (this.nodeSystemDns && !proxy.ok && !yt.ok && !this.startInFlight && !this.addressRefreshAttempted) {
           this.addressRefreshAttempted = true;
           needAddressRefresh = true;
         } else if (swapGeneral || swapProxy) {
@@ -1391,6 +1549,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         swapYt ? '1' : '0', swapUs ? '1' : '0');
       return false;
     }
+    RunningSnapshot.assertAuthorized(this.context, next, this.recoveryIntent);
     const metaRaw = StatusStore.readText(this.context, NODE_META_FILE);
     const nextMeta = failoverSplitMeta(metaRaw.length >= 8 ? metaRaw : '{}', next);
     try {
@@ -1514,6 +1673,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     const rev = this.status.sessionRevision;
     let recovered = false;
     try {
+      RunningSnapshot.assertAuthorized(this.context, this.outboundJson, this.recoveryIntent);
       this.status.phase = PHASE_RECONNECTING;
       this.status.canaryOk = false;
       this.status.honestLabel = honestLabelOf(this.status);
@@ -1531,6 +1691,12 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         return;
       }
       this.coreRestarts += 1;
+      this.clearProtectBridge();
+      if (!await this.drainProtect()) {
+        this.fail('原网络操作尚未结束', '未重用旧内核，等待有界清理');
+        this.requestCleanup('recover protect pending', gen);
+        return;
+      }
       this.appRoutes?.stop();
       const stopForwarder = stopNativeHevTun();
       if (!stopForwarder.ok) {
@@ -1549,14 +1715,12 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         this.requestCleanup('recover stale after stop', gen);
         return;
       }
+      this.installProtectCallback();
       this.socks = newSocksSession();
       const socksPort = this.socks.port;
-      try {
-        this.outboundJson = await HuksSecretStore.readOutbound(this.context);
-        this.outboundJson = CONNECTION_POLICY.enforcePayload(this.context, this.outboundJson);
-      } catch (error) {
-        this.fail('读取节点密文失败', this.errorMessage(error));
-        this.requestCleanup('recover huks', gen);
+      if (this.outboundJson.length < 20) {
+        this.fail('当前运行快照缺失', '不重新选路');
+        this.requestCleanup('recover snapshot missing', gen);
         return;
       }
       if (this.staleRecover(gen, rev) || this.socks.port !== socksPort) {
@@ -1643,6 +1807,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         return;
       }
       this.clearFailoverTrial();
+      await this.saveRecoverySnapshot(gen, this.status.sessionRevision);
+      if (!this.guard(gen, this.status.sessionRevision, this.socks.port, 'recover-snapshot')) return;
       recovered = true;
       const endExtra: Record<string, Object> = {};
       this.emit('recover-end', endExtra);
@@ -1662,7 +1828,8 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private staleRecover(gen: string, rev: number): boolean {
-    return this.cancelled || this.cleaningUp || this.generation !== gen || this.status.sessionRevision !== rev;
+    return this.cancelled || this.cleaningUp || this.generation !== gen || this.status.sessionRevision !== rev ||
+      !controlAllowsStart(StatusStore.readText(this.context, CONTROL_FILE), gen, this.controlIntentId);
   }
 
   private fail(message: string, details: string): void {
@@ -1692,6 +1859,15 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'ignore stale cleanup gen=%{public}s current=%{public}s', generation, this.generation);
       return;
     }
+    // Cleanup is not a back door around the bounded recovery budget. Only an
+    // explicitly admitted DIFFERENT start may follow it automatically.
+    const next = this.latestCommand;
+    const replacement = next !== null && next.kind === 'start' && next.generation !== this.generation &&
+      controlAllowsStart(StatusStore.readText(this.context, CONTROL_FILE), next.generation, next.controlIntentId);
+    if (!replacement && (next === null || next.kind !== 'stop')) {
+      this.status.endReason = reason.indexOf('recover') >= 0 || reason.indexOf('failover') >= 0 ? 'recovery-failed' : 'runtime-ended';
+      this.parkStop(this.generation);
+    }
     hilog.info(LOG_DOMAIN, LOG_TAG, 'cleanup %{public}s', reason);
     this.cleanup().catch((error: Object) => {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'cleanup failed %{public}s', this.errorMessage(error));
@@ -1703,6 +1879,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       return;
     }
     this.cleaningUp = true;
+    try {
     this.cancelled = true;
     this.pendingStart = this.desiredRunning ? this.pendingStart : false;
     if (!this.desiredRunning) {
@@ -1715,6 +1892,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     this.stopSupervisor();
     this.stopCanaryTimer();
     this.clearProtectBridge();
+    await this.drainProtect();
     this.appRoutes?.stop();
     this.appRoutes = null;
     let stopForwarderOk = false;
@@ -1741,12 +1919,9 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'stop xray threw %{public}s', this.errorMessage(error));
     }
     const connection = this.vpnConnection;
-    this.vpnConnection = null;
     this.tunFd = -1;
     let destroyFailed = false;
-    if (this.destroyInFlight) {
-      destroyFailed = true;
-    } else if (connection !== null) {
+    if (connection !== null) {
       try {
         await this.destroyBounded(connection, 4000);
       } catch (error) {
@@ -1755,22 +1930,39 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       }
     }
     const stopFailed = !stopForwarderOk || !stopCoreOk || destroyFailed || poisoned;
+    const finalStats = getNativeStats();
+    poisoned = poisoned || finalStats.poisoned;
+    const resourcePending = this.pendingCreates > 0 || finalStats.xrayStarting !== false || finalStats.xrayStopPending !== false ||
+      finalStats.xrayOwnerSeq !== 0 || finalStats.protectPending !== 0 || finalStats.xrayRunning || finalStats.tunRunning;
+    const priorVpnCreated = this.status.vpnCreated;
     this.refreshCounters();
     this.resetPlaneTruth();
+    if (destroyFailed) this.status.vpnCreated = priorVpnCreated;
     this.status.xrayRunning = getNativeStats().xrayRunning;
     this.status.forwarderOk = getNativeStats().tunRunning;
     if (poisoned) {
       this.status.nativePoisoned = true;
       this.status.phase = PHASE_POISONED;
       this.status.lastError = '内核停不干净，已拆除隧道并禁止重启';
-    } else if (stopFailed) {
+    } else if (stopFailed || resourcePending) {
       this.status.phase = PHASE_ERROR;
       this.status.lastError = '停止内核或销毁隧道失败，已尽力拆除';
     } else {
       this.status.phase = PHASE_STOPPED;
     }
+    this.status.cleanupPending = resourcePending || destroyFailed || poisoned;
     this.status.honestLabel = honestLabelOf(this.status);
     this.publish();
+    if (this.status.phase === PHASE_STOPPED && !resourcePending && !destroyFailed && !poisoned) {
+      const proof: Record<string, Object> = {};
+      proof['writer'] = 'vpn-owner'; proof['ownerInstance'] = this.ownerInstance; proof['scope'] = 'original-owner'; proof['generation'] = this.generation; proof['at'] = Date.now();
+      proof['commandEpoch'] = this.commandEpoch; proof['resourcesReleased'] = true;
+      proof['xrayRunning'] = finalStats.xrayRunning; proof['tunRunning'] = finalStats.tunRunning;
+      proof['xrayStarting'] = finalStats.xrayStarting; proof['xrayOwnerSeq'] = finalStats.xrayOwnerSeq;
+      proof['xrayStopPending'] = finalStats.xrayStopPending; proof['protectPending'] = finalStats.protectPending;
+      proof['vpnCreatePending'] = this.pendingCreates; proof['vpnDestroyed'] = true; proof['poisoned'] = finalStats.poisoned;
+      StatusStore.writeText(this.context, OWNER_TERMINAL_FILE, JSON.stringify(proof));
+    }
     const stopExtra: Record<string, Object> = {};
     this.emit('session-stop', stopExtra);
     this.rotateAccessAfterStop();
@@ -1779,40 +1971,52 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       this.tripBreaker('native-poisoned');
       this.desiredRunning = false;
       this.status.desiredRunning = false;
-      abortPoisonedNative();
+      // Process isolation is not certified by this source-only delivery.
+      // Do not call _exit() from an unverified ability process; the UI provides system-stop escalation.
+      this.forcePublish();
       return;
     }
-    if (destroyFailed) {
-      this.destroyInFlight = true;
+    if (destroyFailed || resourcePending) {
+      this.destroyInFlight = this.pendingDestroy !== null;
       this.desiredRunning = false;
       this.status.desiredRunning = false;
       this.tripBreaker('destroy-timeout');
       return;
     }
     this.dispatchLatest();
+    } finally { this.cleaningUp = false; }
   }
 
   private async destroyBounded(conn: vpnExtension.VpnConnection, timeoutMs: number): Promise<void> {
-    let finished = false;
-    let timerId = -1;
-    const work = conn.destroy().then(() => {
-      finished = true;
-    });
-    const timer = new Promise<void>((_resolve: () => void, reject: (reason: Error) => void) => {
-      timerId = setTimeout(() => {
-        reject(new Error(`connection.destroy timeout ${timeoutMs}ms`));
-      }, timeoutMs);
-    });
-    try {
-      await Promise.race([work, timer]);
-    } finally {
-      if (timerId >= 0) {
-        clearTimeout(timerId);
-      }
+    let operation = this.pendingDestroy;
+    if (operation !== null && operation.connection !== conn) {
+      throw new Error('another VPN destroy operation is still pending');
     }
-    if (!finished) {
-      throw new Error(`connection.destroy timeout ${timeoutMs}ms`);
+    if (operation === null) {
+      const gen = this.generation;
+      // Promise.resolve().then also turns a synchronous platform throw into a receipt.
+      const actual = Promise.resolve().then(() => conn.destroy());
+      operation = new DestroyOperation(conn, gen, actual);
+      this.pendingDestroy = operation;
+      this.destroyInFlight = true;
+      const owned = operation;
+      actual.then(() => {
+        if (this.pendingDestroy !== owned) return;
+        this.pendingDestroy = null;
+        this.destroyInFlight = false;
+        if (this.vpnConnection === conn) this.vpnConnection = null;
+        // Never let a retired result operate on a replacement session.
+        if (this.generation === gen && !this.cleaningUp && (this.cancelled || !this.desiredRunning)) {
+          this.requestCleanup('late destroy completed', gen);
+        }
+      }, (_error: Object) => {
+        if (this.pendingDestroy !== owned) return;
+        this.pendingDestroy = null;
+        this.destroyInFlight = false;
+        // The handle remains owned. An explicit retry may use it; failure is not release.
+      });
     }
+    await deadline(operation.promise, timeoutMs, `connection.destroy timeout ${timeoutMs}ms`);
   }
 
   private resetPlaneTruth(): void {
@@ -1863,13 +2067,19 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private writeStatusNow(): void {
+    this.status.buildSourceIdentity = BuildIdentity.source(this.context);
     this.status.at = Date.now();
+    this.status.ownerInstance = this.ownerInstance;
+    try { this.status.bootId = systemBootId(); this.status.statusMono = monotonicMillis(); } catch (_error) {}
+    this.status.cleanupPending = (this.cleaningUp && this.status.phase !== PHASE_STOPPED) || this.pendingCreates > 0 || this.pendingDestroy !== null;
     this.status.commandEpoch = this.commandEpoch;
     this.status.desiredRunning = this.desiredRunning;
     this.status.lastProvenRid = this.lastProvenRid;
     const stats = getNativeStats();
     this.status.xrayRunning = stats.xrayRunning;
     this.status.forwarderOk = stats.tunRunning;
+    this.status.uploadBytes = stats.uploadBytes;
+    this.status.downloadBytes = stats.downloadBytes;
     const native = this.diagnosticNative(stats);
     try {
       StatusStore.writeStatus(this.context, this.status);
@@ -1889,6 +2099,10 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'status write still failing %{public}s', this.errorMessage(error2));
       }
     }
+    try {
+      const layers = this.layers.sample(this.status, native, StatusStore.readText(this.context, 'probe-fetch.json'), BUNDLE_NAME, Date.now(), StatusStore.readText(this.context, BUSINESS_FILE));
+      StatusStore.writeText(this.context, LAYERS_FILE, JSON.stringify(layers));
+    } catch (_error) { /* Missing observations are unknown, never an authorization to recover. */ }
     // Independent best-effort history: never part of the connection-state contract.
     RuntimeJournal.sample(this.context,
       JSON.parse(serializeStatus(this.status)) as Record<string, Object>, native);
@@ -1897,6 +2111,10 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private diagnosticNative(stats: RuntimeStats): Record<string, Object> {
     const native: Record<string, Object> = {};
     native['xrayRunning'] = stats.xrayRunning;
+    native['xrayStarting'] = stats.xrayStarting;
+    native['xrayOwnerSeq'] = stats.xrayOwnerSeq;
+    native['xrayStopPending'] = stats.xrayStopPending;
+    native['protectPending'] = stats.protectPending;
     native['tunRunning'] = stats.tunRunning;
     native['poisoned'] = stats.poisoned;
     native['generation'] = this.generation;
@@ -1997,6 +2215,14 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private clearOrdinaryBreaker(): void {
     if (this.status.nativePoisoned) {
       return;
+    }
+    // Called only after current-generation/current-network checks succeed and
+    // both native engines are alive. Bound consecutive unverified attempts,
+    // not successful transitions between Wi-Fi and mobile networks.
+    this.automaticRecoveries = 0;
+    this.recoveryWindowAt = Date.now();
+    if (this.status.lastError === '自动恢复已暂停，请手动重新连接当前线路；未换节点。') {
+      this.status.lastError = '';
     }
     const raw = StatusStore.readText(this.context, 'circuit-breaker.json');
     if (raw.length < 8) {
@@ -2110,7 +2336,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'running payload digest missing %{public}s', this.errorMessage(error));
     }
     try {
-      AppliedPolicy.record(this.context, this.outboundJson, this.status.generation);
+      AppliedPolicy.record(this.context, this.outboundJson, this.status.generation, this.recoveryIntent);
     } catch (error) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, 'applied-policy receipt missing %{public}s', this.errorMessage(error));
     }
@@ -2130,6 +2356,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   }
 
   private async startXrayWithPortRetry(firstConfig: string): Promise<NativeResult> {
+    const gen = this.generation, rev = this.status.sessionRevision, token = this.committedToken;
     let configJson = firstConfig;
     let coreResult = await startNativeXray(configJson, this.context.filesDir);
     if (coreResult.ok && this.isAlreadyRunning(coreResult.message)) {
@@ -2137,6 +2364,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       return mismatch;
     }
     for (let attempt = 0; attempt < 4 && !coreResult.ok; attempt++) {
+      if (this.cancelled || this.cleaningUp || gen !== this.generation || rev !== this.status.sessionRevision || token !== this.committedToken) break;
       if (this.isAlreadyRunning(coreResult.message)) {
         break;
       }
@@ -2160,9 +2388,6 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
         const mismatch: NativeResult = { ok: false, message: coreResult.message, poisoned: coreResult.poisoned };
         return mismatch;
       }
-    }
-    if (coreResult.ok) {
-      this.rememberXrayOwner(coreResult);
     }
     return coreResult;
   }
@@ -2379,6 +2604,31 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       dest.indexOf('43.159.') >= 0 || dest.indexOf('43.174.') >= 0 || dest.indexOf('103.235.') >= 0 ||
       dest.indexOf('180.76.') >= 0 || dest.indexOf('220.181.') >= 0 || dest.indexOf('bilibili') >= 0 ||
       dest.indexOf('hdslb.com') >= 0 || dest.indexOf('192.168.3.') >= 0 || dest.indexOf('10.7.0.') >= 0;
+  }
+
+  private async saveRecoverySnapshot(gen: string, rev: number): Promise<void> {
+    let valid = true;
+    const allowed = (): boolean => valid && !this.cancelled && !this.cleaningUp &&
+      this.generation === gen && this.status.sessionRevision === rev;
+    if (!allowed()) return;
+    try {
+      await deadline(RunningSnapshot.record(this.context, this.outboundJson, this.status, this.recoveryIntent, allowed),
+        5000, '运行快照未在期限内保存');
+      StatusStore.removeFile(this.context, 'running-recovery-error.json');
+    } catch (error) {
+      const reason = this.errorMessage(error);
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'recovery snapshot unavailable; rebuild disabled: %{public}s', reason);
+      const receipt: Record<string, Object> = {};
+      receipt['generation'] = gen; receipt['revision'] = rev; receipt['at'] = Date.now(); receipt['reason'] = reason;
+      StatusStore.writeText(this.context, 'running-recovery-error.json', JSON.stringify(receipt));
+    } finally { valid = false; }
+  }
+
+  private rejectLateUiStart(want: Want): boolean {
+    const generation = this.wantString(want, VPN_GENERATION_KEY, '');
+    const intent = this.wantString(want, 'controlIntentId', '');
+    // Reject with zero resource/state side effects. An empty instance cannot attest old resources.
+    return !controlAllowsStart(StatusStore.readText(this.context, CONTROL_FILE), generation, intent);
   }
 
   private errorMessage(error: Object): string {

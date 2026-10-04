@@ -529,6 +529,7 @@ function extractClashProxyEntries(content: string): Array<Map<string, string>> {
   const entries = new Array<Map<string, string>>();
   let inProxies = false;
   let proxiesIndent = -1;
+  let entryIndent = -1;
   let current: Map<string, string> | null = null;
   let sections = new Array<ClashSection>();
 
@@ -548,18 +549,31 @@ function extractClashProxyEntries(content: string): Array<Map<string, string>> {
       continue;
     }
 
-    if (indent <= proxiesIndent && !trimmed.startsWith('- ')) {
+    if (indent <= proxiesIndent && trimmed !== '-' && !trimmed.startsWith('- ')) {
       pushClashEntry(entries, current);
       current = null;
       sections = new Array<ClashSection>();
       break;
     }
 
-    if (trimmed.startsWith('- ')) {
+    if (trimmed === '-' || trimmed.startsWith('- ')) {
+      // YAML sequences can use a bare dash for a proxy, while nested arrays
+      // (for example alpn) also contain dashes. Only peer indentation starts
+      // another proxy; nested values belong to the current proxy.
+      if (entryIndent < 0) entryIndent = indent;
+      if (indent > entryIndent) {
+        const prefix = sectionPrefix(sections);
+        if (current !== null && prefix.length > 0 && trimmed.length > 1) {
+          const value = stripYamlValue(trimmed.substring(1).trim());
+          const previous = current.get(prefix) ?? '';
+          current.set(prefix, previous.length > 0 ? previous + ',' + value : value);
+        }
+        continue;
+      }
       pushClashEntry(entries, current);
       current = new Map<string, string>();
       sections = new Array<ClashSection>();
-      const body = trimmed.substring(2).trim();
+      const body = trimmed === '-' ? '' : trimmed.substring(2).trim();
       if (body.startsWith('{') && body.endsWith('}')) {
         parseInlineMap(body, current, '');
       } else {

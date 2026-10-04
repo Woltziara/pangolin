@@ -20,7 +20,6 @@ import {
   PHASE_UNPROVEN,
   PHASE_VPN_CREATED
 } from '../net/DataplaneStatus';
-import { BACKGROUND_KEEP_ALIVE } from '../services/BackgroundKeepAlive';
 import { CONNECTION_CONTROLLER } from '../services/ConnectionController';
 import { CONNECTION_POLICY } from '../services/ConnectionPolicy';
 import { DataManagement } from '../services/DataManagement';
@@ -199,16 +198,13 @@ export struct Settings {
     this.busy = true;
     try {
       const startEpoch = CONNECTION_CONTROLLER.beginStartIntent();
-      await CONNECTION_CONTROLLER.stop(ctx, false);
-      if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) {
-        return;
+      await CONNECTION_CONTROLLER.preflight(ctx);
+      if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) return;
+      if (StatusStore.readStatus(ctx).desiredRunning || StatusStore.readStatus(ctx).vpnCreated) {
+        const stopped = await CONNECTION_CONTROLLER.stop(ctx, false);
+        if (stopped.phase !== 'STOPPED') throw new Error('旧连接还在处理。请回首页点“恢复连接”，然后再应用设置。');
       }
-      const keep = await BACKGROUND_KEEP_ALIVE.ensure(ctx, 'Settings.reconnect');
       if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) {
-        return;
-      }
-      if (!keep) {
-        promptAction.showToast({ message: '暂时无法保持后台连接，请回到连接页重试。' });
         return;
       }
       await CONNECTION_CONTROLLER.start(ctx, MODE_FULL, startEpoch);

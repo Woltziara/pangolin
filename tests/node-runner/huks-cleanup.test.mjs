@@ -21,7 +21,7 @@ const huks={
 };
 const deps={'@kit.AbilityKit':{common:{}},'@kit.ArkTS':{util:{TextEncoder:class {encodeInto(s){return new TextEncoder().encode(s);}}}},'@kit.PerformanceAnalysisKit':{hilog:{warn(){},info(){},error(){}}},'@kit.UniversalKeystoreKit':{huks},
  '../core/OutboundCommit':oc,
- './StatusStore':{OUTBOUND_FILE:'outbound.json',StatusStore:{removeFile(){removed=true;},readText(){return '';},writeText(){}}}};
+ './StatusStore':{OUTBOUND_FILE:'outbound.json',StatusStore:{listNamesStrict:()=>[],removeFile(){removed=true;},readText(){return '';},writeText(){}}}};
 const module={exports:{}};
 vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,
  {module,exports:module.exports,require(n){if(!(n in deps))throw Error(n);return deps[n];}});
@@ -51,7 +51,7 @@ function loadProtect(failAt) {
   data[oc.OUTBOUND_PLAIN_FILE] = bPlain;
   data[oc.META_STAGING_FILE] = '{"name":"B"}';
   const store = {
-    StatusStore: {
+    StatusStore: {listNamesStrict:()=>[],
       readText(_c, name) { return data[name] || ''; },
       writeText(_c, name, text) {
         if (failAt === name) throw new Error('inject:' + name);
@@ -116,7 +116,7 @@ console.log('PASS actual HUKS protectOutbound: write-point failures restore prev
   data[oc.META_STAGING_FILE] = '{"name":"B"}';
   const failRemoves = new Set(['remove:' + oc.ENVELOPE_NEXT_FILE, 'remove:' + oc.APPLIED_FILE]);
   const store = {
-    StatusStore: {
+    StatusStore: {listNamesStrict:()=>[],
       readText(_c, name) { return data[name] || ''; },
       writeText(_c, name, text) { data[name] = text; },
       removeFile(_c, name) {

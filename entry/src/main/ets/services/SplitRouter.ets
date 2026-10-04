@@ -35,7 +35,12 @@ const PING_BATCH: number = 4;
 // 首页读取后显示一行人话。每次 prepare 前由 ConnectionController 清除。
 export const PREPARE_HINT_FILE: string = 'prepare-hint.json';
 
-const US_FALLBACK: string[] = []; // Public build: no personal node-name preferences.
+const US_FALLBACK: string[] = [
+  '美国-PRO-FW-US1-流量倍率:1',
+  '美国-PRO-US1-流量倍率:1',
+  '美国-PRO-FW-US2-流量倍率:1',
+  '美国-PRO-US2-流量倍率:1'
+];
 
 
 function annotateRolePolicy(payload: string, context: common.Context): string {

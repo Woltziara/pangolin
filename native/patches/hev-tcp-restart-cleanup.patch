@@ -1,0 +1,23 @@
+diff --git a/src/hev-socks5-tunnel.c b/src/hev-socks5-tunnel.c
+--- a/src/hev-socks5-tunnel.c
++++ b/src/hev-socks5-tunnel.c
+@@ -573,6 +573,19 @@ gateway_fini (void)
+         udp_remove (udp);
+         udp = NULL;
+     }
++    /* Session destructors abort accepted connections, but passive handshakes
++     * have no session yet and TIME_WAIT has already lost its session. Drain
++     * both before the next main() calls lwip_init() and recarves the pools.
++     * tcp_init() does not reset these global lists. Keep the listener/netif
++     * alive until abandonment has released its backlog and queued pbuf references.
++     * Tasks have stopped; release locally without writing to the stopped TUN. */
++    while (tcp_active_pcbs)
++        tcp_abandon (tcp_active_pcbs, 0);
++    while (tcp_tw_pcbs)
++        tcp_abandon (tcp_tw_pcbs, 0);
++    while (tcp_bound_pcbs)
++        tcp_abandon (tcp_bound_pcbs, 0);
++
+     if (tcp) {
+         tcp_close (tcp);
+         tcp = NULL;

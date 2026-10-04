@@ -4,6 +4,7 @@ import { window } from '@kit.ArkUI';
 import { BACKGROUND_PROBE_HOST } from '../services/BackgroundProbeHost';
 import { StatusStore } from '../services/StatusStore';
 import { LATENCY_PROBE } from '../services/LatencyProbe';
+import { SystemExitEvidence } from '../services/SystemExitEvidence';
 
 const DOMAIN = 0x3200;
 
@@ -11,6 +12,7 @@ export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     hilog.info(DOMAIN, 'Entry', 'onCreate');
     StatusStore.seedFromRawfile(this.context);
+    SystemExitEvidence.start(this.context);
     BACKGROUND_PROBE_HOST.start(this.context, 'EntryAbility.onCreate');
     this.runRequestedLatencyProbe(want);
   }
@@ -30,8 +32,10 @@ export default class EntryAbility extends UIAbility {
     }
   }
 
+
   onDestroy(): void {
     hilog.info(DOMAIN, 'Entry', 'onDestroy');
+    SystemExitEvidence.stop();
     BACKGROUND_PROBE_HOST.stop(this.context, 'EntryAbility.onDestroy');
   }
 
@@ -55,9 +59,8 @@ export default class EntryAbility extends UIAbility {
   }
 
   onBackground(): void {
-    // Official VPN keep-alive: start DATA_TRANSFER continuous task when the
-    // UI process leaves the foreground. UI setInterval is frozen after that.
-    // https://developer.huawei.com/consumer/cn/doc/harmonyos-faqs/faqs-network-134
+    // Stop UI-path requests when hidden. VPN-owned checks continue in the
+    // extension without a separate data-transfer notification.
     hilog.info(DOMAIN, 'Entry', 'background');
     BACKGROUND_PROBE_HOST.start(this.context, 'EntryAbility.onBackground');
   }

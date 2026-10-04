@@ -1,3 +1,4 @@
+import { BuildIdentity } from '../services/BuildIdentity';
 import { UiFeedback } from '../services/UiFeedback';
 import { NativePage } from '../components/NativePage';
 // 穿山 (GPL-3.0) — 帮助与关于页（Phase D 新增）：纯静态中文内容 +
@@ -13,10 +14,12 @@ const FEEDBACK_EMAIL: string = 'tongdao-feedback@oscarwoltz.dev';
 @Component
 struct About {
   @State versionName: string = FALLBACK_APP_VERSION;
+  @State sourceIdentity: string = '';
   private context: common.UIAbilityContext | null = null;
 
   aboutToAppear(): void {
     this.context = getContext(this) as common.UIAbilityContext;
+    this.sourceIdentity = BuildIdentity.source(this.context);
     DiagnosticReport.appVersion().then((version: string) => {
       this.versionName = version;
     }).catch(() => {
@@ -82,6 +85,8 @@ struct About {
         ListItem() {
           Column() {
             this.SectionTitle('应用与服务')
+            this.Body(`版本：${this.versionName}`)
+            this.Body(this.sourceIdentity.length > 0 ? `源码身份：${this.sourceIdentity}` : '未嵌入实测构建身份；请通过 build_candidate.py 构建。')
             this.Body('本版提供单通道和双通道连接、配置与管理工具，不提供节点、网络流量或相关网络服务。你需要自行获取节点，并按服务提供方的要求使用。')
             this.SectionTitle('首次使用')
             this.Body('1. 在「节点」页打开导入入口，扫码、粘贴链接或选择配置文件\n' +

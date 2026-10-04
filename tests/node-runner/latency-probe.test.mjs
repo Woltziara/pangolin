@@ -55,7 +55,7 @@ await probe.runHttp({}, '../../invalid');
 assert.equal(requests.length, 0);
 const socks = { host: '127.0.0.1', port: 12345, user: 'PRIVATE_PROXY_USER', pass: 'PRIVATE_PROXY_PASSWORD' };
 await probe.runHttp({}, 'native-test', socks, true);
-assert.equal(requests.length, 8);
+assert.equal(requests.length, 6);
 for (const { options } of requests) {
   assert.equal(options.usingCache, false);
   assert.equal(options.reuseConnections, false);
@@ -66,13 +66,13 @@ for (const { options } of requests) {
 const result = writes.at(-1);
 assert.equal(result.file, 'latency-native-socks.json');
 assert.equal(result.data.complete, true);
-assert.equal(result.data.samples.length, 8);
+assert.equal(result.data.samples.length, 6);
 assert.equal(result.data.samples[0].socksConfirmed, true);
 assert.ok(!JSON.stringify(result).includes('DO_NOT_LOG_LOCAL_IP'));
 await probe.runHttp({}, 'native-test', socks, true);
-assert.equal(requests.length, 8, 'duplicate run must be ignored');
+assert.equal(requests.length, 6, 'duplicate run must be ignored');
 live = false;
 await probe.runHttp({}, 'stopped-test');
-assert.equal(requests.length, 8, 'stopped VPN must not cause diagnostic fetches');
+assert.equal(requests.length, 6, 'stopped VPN must not cause diagnostic fetches');
 assert.equal(writes.at(-1).data.outcome, 'session-not-live-or-changed');
 console.log('PASS latency probe: bounded fixed targets, explicit SOCKS, fresh connections, no secrets/body/cookies, duplicate and stopped-session guards');

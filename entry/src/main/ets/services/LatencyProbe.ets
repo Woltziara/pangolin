@@ -21,8 +21,7 @@ interface SocksTarget {
 const HTTP_TARGETS: HttpTarget[] = [
   { name: 'google-http', url: 'http://www.google.com/generate_204', method: http.RequestMethod.GET },
   { name: 'google-https', url: 'https://www.google.com/generate_204', method: http.RequestMethod.GET },
-  { name: 'qq-https-head', url: 'https://www.qq.com/', method: http.RequestMethod.HEAD },
-  { name: 'chatgpt-https-head', url: 'https://chatgpt.com/', method: http.RequestMethod.HEAD }
+  { name: 'qq-https-head', url: 'https://www.qq.com/', method: http.RequestMethod.HEAD }
 ];
 
 const ANDROID_HTTP_TARGETS: HttpTarget[] = [

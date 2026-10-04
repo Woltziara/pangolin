@@ -84,16 +84,16 @@ struct SkinPreview {
     }, 360);
   }
   private advice(): void {
-    AlertDialog.show({ title: '可能原因与建议',
-      message: '默认建议顺序，不代表已经检测出故障。\n\n1. 当前节点暂时不可用：先换个节点。\n2. 连接遇到短暂波动：重试当前连接。\n3. 手机网络或连接服务异常：再查看本机诊断。',
+    AlertDialog.show({ title: '连接不顺时',
+      message: '先点“检测连接”，按首页给出的结果操作；若节点接不通，再换一个节点。',
       confirm: { value: '知道了', action: () => {} } });
   }
   private chooseNode(): void {
     ActionSheet.show({ title: '选择节点（演示）', message: '仅预览，不修改实际节点或连接。',
       sheets: [
-        { title: '美国 · 演示节点', action: () => { this.demonstrate('connecting'); } },
-        { title: '日本 · 演示节点', action: () => { this.demonstrate('connecting'); } },
-        { title: '中国香港 · 演示节点', action: () => { this.demonstrate('connecting'); } }
+        { title: '美国 · FW-US1', action: () => { this.demonstrate('connecting'); } },
+        { title: '日本 · FW-JP1', action: () => { this.demonstrate('connecting'); } },
+        { title: '中国香港 · HK1', action: () => { this.demonstrate('connecting'); } }
       ] });
   }
   build() {
@@ -127,7 +127,8 @@ struct SkinPreview {
                 Button('演示欢迎').margin(4).onClick(() => { this.demonstrate('welcome'); })
                 Button('演示连接').margin(4).onClick(() => { this.demonstrate('connecting'); })
                 Button('演示完成').margin(4).onClick(() => { this.demonstrate('connected'); })
-                Button('演示断开').margin(4).onClick(() => { this.demonstrate('idle'); })
+                Button('演示断开').margin(4).enabled(this.state === 'connected')
+                  .onClick(() => { this.demonstrate('disconnecting'); })
                 Button('演示异常').margin(4).onClick(() => { this.demonstrate('attention'); })
               }.width('100%').onAreaChange((_old: Area, area: Area) => { this.remember(3, area); })
               Row() {

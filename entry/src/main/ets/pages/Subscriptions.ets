@@ -8,6 +8,7 @@ import { promptAction, router } from '@kit.ArkUI';
 import { SubscriptionManager, UpdateResult } from '../services/SubscriptionManager';
 import { SubscriptionScheduler } from '../services/SubscriptionScheduler';
 import { SubscriptionRecord, SubscriptionStore } from '../services/SubscriptionStore';
+import { DataManagement } from '../services/DataManagement';
 import { formatBytes, formatDate, formatRelativeTime, maskUrlMiddle } from '../services/UiFormat';
 
 const INTERVAL_OPTIONS: Array<number> = [2, 6, 12, 24];
@@ -85,6 +86,7 @@ struct Subscriptions {
   @State newUrl: string = '';
   @State newName: string = '';
   @State lastError: string = '';
+  @State removalToResume: string = '';
   private context: common.UIAbilityContext | null = null;
   private renameController: CustomDialogController | null = null;
 
@@ -103,6 +105,7 @@ struct Subscriptions {
       return;
     }
     this.subs = SubscriptionStore.load(ctx);
+    this.removalToResume = DataManagement.pendingSubscriptionRemoval(ctx);
   }
 
   private isUpdating(id: string): boolean {
@@ -221,26 +224,33 @@ struct Subscriptions {
   private confirmDelete(sub: SubscriptionRecord): void {
     AlertDialog.show({
       title: '删除订阅',
-      message: `确定删除「${sub.name}」吗？已经导入的节点会保留在节点列表中。`,
-      primaryButton: {
-        value: '删除',
+      message: `「${sub.name}」有 ${sub.nodeCount} 个节点。请选择是否一并删除；其他订阅和节点会保留。`,
+      buttons: [{
+        value: '删除订阅及其节点',
         fontColor: $r('sys.color.ohos_id_color_warning'),
+        action: () => { this.removeSource(sub.id, true); }
+      }, {
+        value: '仅删除订阅，保留节点',
         action: () => {
-          const ctx = this.context;
-          if (ctx === null) {
-            return;
-          }
-          SubscriptionStore.remove(ctx, sub.id);
-          this.reload();
-          this.rescheduleBackground();
+          this.removeSource(sub.id, false);
         }
-      },
-      secondaryButton: {
+      }, {
         value: '取消',
-        action: () => {
-        }
-      }
+        action: () => {}
+      }]
     });
+  }
+
+  private removeSource(id: string, withNodes: boolean): void {
+    if (this.context === null) return;
+    try {
+      if (withNodes) DataManagement.removeSubscriptionAndNodes(this.context, id);
+      else SubscriptionStore.remove(this.context, id);
+      this.lastError = '';
+      this.rescheduleBackground();
+    } catch (error) {
+      this.lastError = (error as Error).message || '删除未完成，请重试。';
+    } finally { this.reload(); }
   }
 
   private toggleAutoUpdate(sub: SubscriptionRecord, on: boolean): void {
@@ -396,6 +406,9 @@ struct Subscriptions {
 
       Button('全部更新').enabled(!this.busyAll && this.subs.length > 0)
         .onClick(() => { this.updateAll(); }).margin({ bottom: 8 })
+      if (this.removalToResume.length > 0) {
+        Button('继续完成上次删除').onClick(() => { this.removeSource(this.removalToResume, true); })
+      }
       // 添加订阅
       Column({ space: 10 }) {
         TextInput({ placeholder: '订阅地址（https://…）', text: this.newUrl })

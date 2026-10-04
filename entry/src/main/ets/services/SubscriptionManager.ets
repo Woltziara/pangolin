@@ -52,6 +52,11 @@ export class CommitSummary {
   skippedDuplicates: number = 0;
 }
 
+export class OfflineSourceResult {
+  sourceId: string = '';
+  nodeCount: number = 0;
+}
+
 interface SubscriptionRequestHeader {
   'User-Agent': string;
   'Accept': string;
@@ -61,6 +66,26 @@ interface SubscriptionRequestHeader {
 }
 
 export class SubscriptionManager {
+  /** Link an already owned local configuration to its subscription URL without
+   * claiming that the service was reached or deleting old source records. */
+  static commitOfflineSubscription(context: common.Context, url: string, nodes: Array<ParsedNode>): OfflineSourceResult {
+    const normalized = toIdnUrl(url.trim());
+    const invalid = SubscriptionManager.validateSubscriptionUrl(normalized, false);
+    if (invalid.length > 0) throw new Error(invalid);
+    if (nodes.length === 0) throw new Error('配置文件没有可用节点。');
+    if (nodes.length > 5000) throw new Error('配置文件节点过多，请检查来源。');
+    const source = SubscriptionStore.add(context, '', normalized);
+    NodeStore.mergeRuntime(context, nodes, source.id, false);
+    const current = SubscriptionStore.findById(context, source.id);
+    if (current === null) throw new Error('订阅记录未能读回，节点已保留；请到订阅管理核查。');
+    current.nodeCount = NodeStore.filterBySource(NodeStore.loadNodes(context), source.id).length;
+    current.lastError = '已从本地配置导入，在线更新尚未确认。';
+    // lastUpdateAt and userinfo remain as previously observed, if any.
+    SubscriptionStore.update(context, current);
+    const result = new OfflineSourceResult();
+    result.sourceId = source.id; result.nodeCount = current.nodeCount;
+    return result;
+  }
   /** 抓取订阅内容；失败抛出带中文信息的 Error。 */
   static async fetchSubscription(url: string, opts: FetchOptions): Promise<FetchResult> {
     const trimmedUrl = url.trim();
@@ -133,7 +158,9 @@ export class SubscriptionManager {
       return result;
     }
 
-    const merge = NodeStore.mergeRuntime(context, outcome.nodes, live.id);
+    const previousCount = NodeStore.loadNodes(context).filter((node) => node.sourceId === live.id).length;
+    const allowPrune = outcome.skipped === 0 && !(previousCount > 10 && outcome.nodes.length < previousCount / 2);
+    const merge = NodeStore.mergeRuntime(context, outcome.nodes, live.id, allowPrune);
     live.lastUpdateAt = Date.now();
     live.lastError = '';
     live.userinfo = fetched.userinfo;
@@ -145,6 +172,7 @@ export class SubscriptionManager {
     result.message = outcome.skipped > 0
       ? `订阅更新完成，共 ${outcome.nodes.length} 个可用节点，跳过 ${outcome.skipped} 条不支持的记录（新增 ${merge.added}，更新 ${merge.updated}）。`
       : `订阅更新完成，共 ${outcome.nodes.length} 个可用节点（新增 ${merge.added}，更新 ${merge.updated}）。`;
+    if (!allowPrune || merge.rotationAmbiguous) result.message += ' 本次解析不完整、节点骤减或同名凭据不唯一，已保留原节点，未自动删除。';
     return result;
   }
 

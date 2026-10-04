@@ -27,8 +27,8 @@ const STATUS_NUMBERS: Array<string> = ['tunRxBytes', 'tunTxBytes', 'tunRxPackets
   'probeEpoch', 'commandEpoch', 'lastReachableAt', 'healthCheckedAt', 'healthRevision',
   'fetchGoogleHttp', 'fetchDirectHttp'];
 // Native output is deliberately not treated as a generic JSON metrics tree.
-const NATIVE_BOOLEANS: Array<string> = ['xrayRunning', 'tunRunning', 'poisoned'];
-const NATIVE_NUMBERS: Array<string> = ['protectQueued', 'protectAcked', 'protectTimeout', 'protectVisible',
+const NATIVE_BOOLEANS: Array<string> = ['xrayRunning', 'tunRunning', 'poisoned', 'xrayStarting', 'xrayStopPending'];
+const NATIVE_NUMBERS: Array<string> = ['xrayOwnerSeq', 'protectPending', 'protectQueued', 'protectAcked', 'protectTimeout', 'protectVisible',
   'protectMeasured', 'protectTcp4', 'protectTcp6', 'protectUdp', 'protectTotalUs', 'protectMaxUs'];
 const HEV_NUMBERS: Array<string> = ['rxCalls', 'rxAgain', 'rxErrors', 'rxZero', 'rxMessages', 'lastRxErrno',
   'loopCalls', 'loopIdle', 'loopProgress', 'loopTerminal', 'controlCalls', 'controlAgain', 'controlEof',

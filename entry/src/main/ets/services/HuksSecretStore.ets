@@ -59,7 +59,7 @@ export class HuksSecretStore {
     }
   }
 
-  static async protectOutbound(context: common.Context): Promise<void> {
+  static async protectOutbound(context: common.Context, commitAllowed: () => boolean = (): boolean => true): Promise<void> {
     const newPlain = StatusStore.readText(context, OUTBOUND_PLAIN_FILE);
     if (newPlain.length < 20) {
       return;
@@ -87,6 +87,7 @@ export class HuksSecretStore {
         hilog.error(LOG_DOMAIN, LOG_TAG, 'HUKS wrap failed %{public}s', JSON.stringify(error));
       }
     }
+    if (!commitAllowed()) return;
     const err = applyNewCommit(files, newPlain, newMeta, envelope, huksAvailable, wrapOk);
     if (err === STAGING_CLEANUP_WARNING) {
       hilog.warn(LOG_DOMAIN, LOG_TAG, '%{public}s', err);
@@ -99,6 +100,63 @@ export class HuksSecretStore {
   static async readOutbound(context: common.Context): Promise<string> {
     const files = new StatusCommitFiles(context);
     return readCommittedEnvelopeAsync(files, (envelope: string) => HuksSecretStore.unwrapEnvelope(envelope));
+  }
+
+  private static localRecordName(name: string): boolean {
+    return name === 'running-recovery.huks' || /^running-recovery-[A-Za-z0-9_-]{3,160}\.huks$/.test(name);
+  }
+  static async writeLocalRecord(context: common.Context, name: string, text: string, commitAllowed: () => boolean = (): boolean => true): Promise<void> {
+    if (!HuksSecretStore.localRecordName(name)) throw new Error('不支持的加密记录');
+    if (!await HuksSecretStore.isAvailable()) throw new Error('HUKS 不可用，运行快照未保存');
+    await HuksSecretStore.ensureKey();
+    const bytes = HuksSecretStore.encode(text);
+    if (bytes.length > 512 * 1024) throw new Error('运行快照超出有界存储预算');
+    const count = Math.max(1, Math.ceil(bytes.length / 1024));
+    const recordId = util.generateRandomUUID();
+    const chunks: string[] = [];
+    for (let index = 0; index < count; index++) {
+      if (!commitAllowed()) return;
+      const part: Record<string, Object> = { 'purpose': 'pangolin-local-record-v2', 'name': name,
+        'recordId': recordId, 'index': index, 'count': count, 'bytes': bytes.length,
+        'data': HuksSecretStore.b64encode(bytes.slice(index * 1024, (index + 1) * 1024)) };
+      const plain = JSON.stringify(part); const nonce = HuksSecretStore.randomNonce();
+      const cipher = await HuksSecretStore.cipher(true, nonce, HuksSecretStore.encode(plain));
+      const envelope = HuksSecretStore.envelopeJson(nonce, cipher);
+      if (await HuksSecretStore.unwrapEnvelope(envelope) !== plain) throw new Error('运行快照回读失败');
+      chunks.push(envelope);
+    }
+    if (!commitAllowed()) return;
+    const wrapper: Record<string, Object> = { 'v': 2, 'chunks': chunks };
+    StatusStore.writeText(context, name, JSON.stringify(wrapper));
+  }
+
+  static async readLocalRecord(context: common.Context, name: string): Promise<string> {
+    if (!HuksSecretStore.localRecordName(name)) throw new Error('不支持的加密记录');
+    const raw = StatusStore.readStrictText(context, name);
+    const wrapper = JSON.parse(raw) as Record<string, Object>;
+    if (wrapper['v'] !== 2) return HuksSecretStore.unwrapEnvelope(raw); // legacy read-only compatibility
+    if (!Array.isArray(wrapper['chunks'])) throw new Error('运行快照缺少分块');
+    const chunks = wrapper['chunks'] as string[];
+    if (chunks.length < 1 || chunks.length > 512) throw new Error('运行快照分块数量无效');
+    let recordId = ''; let totalBytes = -1; const parts: Uint8Array[] = [];
+    for (let index = 0; index < chunks.length; index++) {
+      const part = JSON.parse(await HuksSecretStore.unwrapEnvelope(chunks[index])) as Record<string, Object>;
+      if (part['purpose'] !== 'pangolin-local-record-v2' || part['name'] !== name ||
+        part['index'] !== index || part['count'] !== chunks.length || typeof part['recordId'] !== 'string' ||
+        typeof part['data'] !== 'string' || typeof part['bytes'] !== 'number') throw new Error('运行快照分块认证或顺序错误');
+      if (index === 0) { recordId = part['recordId'] as string; totalBytes = part['bytes'] as number; }
+      if (part['recordId'] !== recordId || part['bytes'] !== totalBytes || totalBytes < 0 || totalBytes > 512 * 1024) throw new Error('运行快照混合版本');
+      const bytes = HuksSecretStore.b64decode(part['data'] as string);
+      if (bytes.length > 1024 || (index < chunks.length - 1 && bytes.length !== 1024)) throw new Error('运行快照分块长度错误');
+      parts.push(bytes);
+    }
+    const out = new Uint8Array(totalBytes); let offset = 0;
+    for (let i = 0; i < parts.length; i++) {
+      if (offset + parts[i].length > out.length) throw new Error('运行快照长度超出');
+      out.set(parts[i], offset); offset += parts[i].length;
+    }
+    if (offset !== totalBytes) throw new Error('运行快照不完整');
+    return HuksSecretStore.decode(out);
   }
 
   static restorePrevious(context: common.Context): boolean {
@@ -135,6 +193,8 @@ export class HuksSecretStore {
    * HUKS 密钥本体。两者都允许不存在（静默跳过）。
    */
   static async removeProtected(context: common.Context): Promise<void> {
+    StatusStore.listNamesStrict(context).filter((name: string) => HuksSecretStore.localRecordName(name) || name === 'running-recovery-pointer.json')
+      .forEach((name: string) => StatusStore.removeFile(context, name));
     StatusStore.removeFile(context, ENVELOPE_FILE);
     StatusStore.removeFile(context, PREV_ENVELOPE_FILE);
     StatusStore.removeFile(context, ENVELOPE_NEXT_FILE);

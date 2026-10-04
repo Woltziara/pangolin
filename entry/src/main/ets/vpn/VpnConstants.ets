@@ -44,11 +44,10 @@ export function createVpnAbilityWant(): Want {
 
 export function createStopWant(generation: string = ''): Want {
   const want = createVpnAbilityWant();
-  if (generation.length > 0) {
-    want.parameters = {
-      generation: generation as Object
-    };
-  }
+  want.parameters = {
+    command: VPN_COMMAND_STOP as Object,
+    generation: generation as Object
+  };
   return want;
 }
 

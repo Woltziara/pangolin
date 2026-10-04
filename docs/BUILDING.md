@@ -37,7 +37,7 @@ bash scripts/build.sh --native-only
 
 完整命令的未签名产物位于 `entry/build/default/outputs/default/entry-default-unsigned.hap`。构建脚本不安装 App，也不改变手机或电脑 VPN。
 
-`0.4.10` 已在现有 DevEco SDK / OpenHarmony Go 工具链上分别从锁定源码重建 Xray、HEV，产物 SHA-256 与 `CORE_LOCK.json` 一致；也完成了 unsigned HAP 编译和内容检查。尚未在另一套全新安装的 SDK 上复验。
+`0.5.40` 已在现有 DevEco SDK / OpenHarmony Go 工具链上分别从锁定源码重建 Xray、HEV，产物 SHA-256 与 `CORE_LOCK.json` 一致；也完成了 unsigned HAP 编译和内容检查。尚未在另一套全新安装的 SDK 上复验。
 
 修改 ArkTS 或桥接层时，如本机已有哈希匹配的两个内核，可缩短构建：
 
@@ -54,3 +54,5 @@ bash scripts/build.sh --use-locked-cores
 ## 5. 原生实现
 
 生产转发是 `TUN → libhevsocks5tun.so → SOCKS → libxray.so`，N-API 桥为 `libheyvpn.so`。`native/patches/` 包含保护 socket、防回环、生命周期、UDP 事件、进度计数及逐流 App 路由补丁。原生桥只绑定锁定的 Xray CGo ABI 和 HEV；不再包含 sing-box、旧 tun2socks 适配器或子进程启动分支。
+
+构建入口还会生成 `pangolin-build.json`，供实际 App 的诊断和恢复记录读取源码身份；不要手工复制旧身份文件。

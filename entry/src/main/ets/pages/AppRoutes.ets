@@ -1,3 +1,4 @@
+import { SHARED_HOST_GUIDANCE } from '../services/AppRouteCapability';
 import { common } from '@kit.AbilityKit';
 import { promptAction } from '@kit.ArkUI';
 import { NativePage } from '../components/NativePage';
@@ -197,7 +198,7 @@ export struct AppRoutes {
         Button('从已识别 App 选择').layoutWeight(1).onClick(() => { this.pickObserved(); })
         Button(this.resolving ? '确认中…' : '确认包名').layoutWeight(1).enabled(!this.resolving).onClick(() => { this.confirmBundle(); })
       }
-      Text(this.formLabel.length > 0 ? `已确认：${this.formLabel}` : '手动填写后必须确认；不会使用静态 App 清单。')
+      Text(this.formLabel.length > 0 ? `已确认：${this.formLabel}` : '填写包名后点“确认应用”。')
         .fontSize(12).fontColor($r('sys.color.ohos_id_color_text_secondary')).width('100%')
       Button(`目标节点：${this.nodeName(this.formNodeId)}`).width('100%').onClick(() => { this.pickNode(); })
       if (this.formError.length > 0) { Text(this.formError).fontSize(12).fontColor($r('sys.color.ohos_id_color_warning')).width('100%') }
@@ -219,12 +220,12 @@ export struct AppRoutes {
           Toggle({ type: ToggleType.Switch, isOn: this.config.enabled })
             .onChange((value: boolean) => { this.switchEnabled(value); })
         }.width('100%').padding(12).borderRadius(12).backgroundColor($r('sys.color.ohos_id_color_component_normal'))
-        Text('打开开关但暂不添加规则也可以：重新连接 VPN 后，打开目标 App 联网，再回这里从“已识别 App”选择。全直连模式暂停 App 分流；共享 UID 的兼容容器不能分别指定节点。')
+        Text('找不到目标 App？先打开它联网，再回这里从“已识别 App”选择。出境易里的应用共用一条线路，不能分别选节点；全部直连模式下 App 分流暂不生效。')
           .fontSize(12).fontColor($r('sys.color.ohos_id_color_text_secondary')).width('100%')
         if (this.feedback.length > 0) { Text(this.feedback).fontSize(13).fontColor($r('sys.color.ohos_id_color_text_secondary')).width('100%') }
         this.Form()
         Text('现有规则').fontSize(18).fontWeight(FontWeight.Medium).width('100%')
-        if (this.config.rules.length === 0) { Text('还没有规则。保存配置不代表本次 VPN 已运行。').fontSize(14).width('100%').fontColor($r('sys.color.ohos_id_color_text_secondary')) }
+        if (this.config.rules.length === 0) { Text('还没有规则。添加后保存，再回首页应用并连接。').fontSize(14).width('100%').fontColor($r('sys.color.ohos_id_color_text_secondary')) }
         ForEach(this.config.rules, (route: AppRoute) => {
           Column({ space: 6 }) {
             Row() {
@@ -241,6 +242,8 @@ export struct AppRoutes {
 
   build() {
     Column() {
+          Text(SHARED_HOST_GUIDANCE).fontSize(13)
+          Text('保存后回首页点“应用并连接”，让新规则生效。').fontSize(13)
       NativePage({ title: 'App 指定节点', rootPage: false }) { this.Content(); }
     }.width('100%').height('100%')
   }

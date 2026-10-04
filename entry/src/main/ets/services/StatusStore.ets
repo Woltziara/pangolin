@@ -1,8 +1,9 @@
+import { CONTROL_FILE, OWNER_TERMINAL_FILE, projectControl } from '../net/OwnerTerminal';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { util } from '@kit.ArkTS';
 import { DATAPLANE_STATUS_FILE, NODE_META_FILE, NodeMeta, parseNodeMeta, XRAY_CONFIG_FILE } from '../core/XrayRuntime';
-import { atomicReplaceFile } from '../native/TunnelNative';
+import { atomicReplaceFile, compareReplaceText, acquireUserDataLease, releaseUserDataLease } from '../native/TunnelNative';
 import { DataplaneStatus, parseStatus, PHASE_ERROR, PHASE_IDLE, serializeStatus } from '../net/DataplaneStatus';
 import { updateConnectionHealth } from '../net/ConnectionHealth';
 import { BUNDLE_NAME } from '../vpn/VpnConstants';
@@ -14,6 +15,7 @@ const GEOIP_RELEASE: string = 'v2fly-geoip-202608050239';
 const GEOSITE_RELEASE: string = 'v2fly-geosite-20260831141734';
 
 export class StatusStore {
+  private static readVersions: Map<string, string> = new Map<string, string>();
   static statusPath(context: common.Context): string {
     return `${context.filesDir}/${DATAPLANE_STATUS_FILE}`;
   }
@@ -32,6 +34,41 @@ export class StatusStore {
   }
 
   static readStatus(context: common.Context): DataplaneStatus {
+    try {
+      const owner = StatusStore.readOwnerStatus(context);
+      if (owner.honestLabel === '状态文件读失败') {
+        owner.phase = 'STOP_UNCONFIRMED'; owner.operationKind = 'record-error';
+      }
+      return projectControl(owner, StatusStore.readStrictText(context, CONTROL_FILE),
+        StatusStore.readStrictText(context, OWNER_TERMINAL_FILE), StatusStore.readText(context, 'system-observation.json'));
+    } catch (_error) {
+      const unknown = new DataplaneStatus();
+      unknown.phase = 'STOP_UNCONFIRMED';
+      unknown.honestLabel = '连接记录无法读取';
+      unknown.lastError = '未能读取连接控制记录；未启动、未清理任何用户数据。';
+      return unknown;
+    }
+  }
+
+  /** Absent is distinct from corrupt/unreadable. Safety decisions must use this reader. */
+  static readStrictText(context: common.Context, name: string): string {
+    const path = `${context.filesDir}/${name}`;
+    try {
+      if (!fs.accessSync(path)) return '';
+      return fs.readTextSync(path);
+    } catch (_error) { throw new Error(`本机记录无法读取：${name}，未覆盖原数据。`); }
+  }
+
+  /** Compare-and-replace, including a cross-process comparison under the native lock. */
+  static compareText(context: common.Context, name: string, expected: string, value: string): boolean {
+    if (!/^[A-Za-z0-9_.-]+$/.test(name) || name.indexOf('..') >= 0) throw new Error('invalid record name');
+    const result = compareReplaceText(`${context.filesDir}/${name}`, expected, value);
+    if (result.ok) return true;
+    if (result.message === 'conflict') return false;
+    throw new Error(`本机记录提交失败：${name}；${result.message}`);
+  }
+
+  static readOwnerStatus(context: common.Context): DataplaneStatus {
     const path = StatusStore.statusPath(context);
     try {
       const raw = StatusStore.recoverCanonical(path);
@@ -109,10 +146,12 @@ export class StatusStore {
   }
 
   static readNodes(context: common.Context): NodeRecord[] {
-    const raw = StatusStore.readText(context, NODES_FILE);
+    const raw = StatusStore.readJsonFile(context, NODES_FILE);
     if (raw.length === 0) {
       return [];
     }
+    const catalog = JSON.parse(raw) as Record<string, Object>;
+    if (!Array.isArray(catalog['nodes'])) throw new Error('节点目录结构无效，未采用旧线路或写空。');
     return parseNodeCatalog(raw);
   }
 
@@ -131,20 +170,35 @@ export class StatusStore {
   }
 
   // Additive helpers for the import/subscription layer (NodeStore, SubscriptionStore).
-  // readJsonFile goes through recoverCanonical so a crashed write heals from the
-  // newest durable tmp file, same as the dataplane status file.
+  // Reads accept only the committed canonical record. Abandoned temporaries are not authority.
   static readJsonFile(context: common.Context, name: string): string {
     const path = `${context.filesDir}/${name}`;
-    try {
-      return StatusStore.recoverCanonical(path);
-    } catch (error) {
-      console.error(`readJsonFile ${name} failed ${JSON.stringify(error)}`);
-      return '';
-    }
+    const raw = StatusStore.recoverCanonical(path);
+    StatusStore.readVersions.set(path, raw);
+    return raw;
   }
 
+  static acquireUserDataLease(context: common.Context): number {
+    const token = acquireUserDataLease(`${context.filesDir}/user-data-transaction.lock`);
+    if (token <= 0) throw new Error('另一数据操作正在进行，未覆盖或清理。');
+    return token;
+  }
+  static releaseUserDataLease(token: number): void { releaseUserDataLease(token); }
   static writeJsonAtomic(context: common.Context, name: string, text: string): void {
-    StatusStore.writeAtomic(`${context.filesDir}/${name}`, text);
+    const lease = StatusStore.acquireUserDataLease(context);
+    try {
+      const control = StatusStore.readStrictText(context, CONTROL_FILE);
+      if (control.length > 0) {
+        const marker = JSON.parse(control) as Record<string, Object>;
+        if (marker['kind'] === 'maintenance' && marker['state'] !== 'confirmed') throw new Error('数据清理尚未完成，未写入新数据。');
+      }
+      const path = `${context.filesDir}/${name}`;
+      const prior = StatusStore.readVersions.get(path);
+      const expected = prior !== undefined ? prior : StatusStore.recoverCanonical(path);
+      JSON.parse(text);
+      if (!StatusStore.compareText(context, name, expected, text)) throw new Error('数据已被另一操作更新，请重新载入；未覆盖其他修改。');
+      StatusStore.readVersions.set(path, text);
+    } finally { StatusStore.releaseUserDataLease(lease); }
   }
 
   static removeFile(context: common.Context, name: string): void {
@@ -185,9 +239,12 @@ export class StatusStore {
       const nonce = util.generateRandomUUID();
       const tmp = `${path}.${Date.now()}.${nonce}.tmp`;
       const file = fs.openSync(tmp, fs.OpenMode.WRITE_ONLY | fs.OpenMode.CREATE | fs.OpenMode.TRUNC);
-      fs.writeSync(file.fd, text);
-      fs.fsyncSync(file.fd);
-      fs.closeSync(file);
+      try {
+        const bytes = new util.TextEncoder().encodeInto(text);
+        const written = fs.writeSync(file.fd, bytes.buffer);
+        if (written !== bytes.byteLength) throw new Error('incomplete file write');
+        fs.fsyncSync(file.fd);
+      } finally { fs.closeSync(file); }
       const replaced = atomicReplaceFile(tmp, path);
       if (replaced.ok) {
         return;
@@ -195,6 +252,11 @@ export class StatusStore {
       last = replaced.message;
     }
     throw new Error(`atomicReplaceFile ${path}: ${last}`);
+  }
+
+  static listNamesStrict(context: common.Context): string[] {
+    // Used by deletion only. Listing failure cannot become an empty successful wipe.
+    return fs.listFileSync(context.filesDir);
   }
 
   static listNames(context: common.Context): string[] {
@@ -218,60 +280,20 @@ export class StatusStore {
   }
 
   static recoverCanonical(path: string): string {
-    try {
-      if (fs.accessSync(path)) {
-        const raw = fs.readTextSync(path);
-        if (raw.length >= 2) {
-          JSON.parse(raw);
-          return raw;
-        }
-      }
-    } catch (error) {
-      // dest missing or invalid; try promoting a durable tmp
-    }
-    const slash = path.lastIndexOf('/');
-    const dir = slash >= 0 ? path.substring(0, slash) : '.';
-    const base = slash >= 0 ? path.substring(slash + 1) : path;
-    let bestPath = '';
-    let bestMtime = -1;
-    try {
-      const names = fs.listFileSync(dir);
-      for (let i = 0; i < names.length; i++) {
-        const name = names[i];
-        if (name.indexOf(`${base}.`) !== 0 || name.indexOf('.tmp') < 0) {
-          continue;
-        }
-        const cand = `${dir}/${name}`;
-        try {
-          const raw = fs.readTextSync(cand);
-          if (raw.length < 2) {
-            continue;
-          }
-          JSON.parse(raw);
-          const st = fs.statSync(cand);
-          if (st.mtime > bestMtime) {
-            bestMtime = st.mtime;
-            bestPath = cand;
-          }
-        } catch (error) {
-          // skip
-        }
-      }
-    } catch (error) {
-      // no listing
-    }
-    if (bestPath.length === 0) {
+    // Read-only. A fsynced temporary file is NOT a committed transaction.
+    if (!fs.accessSync(path)) {
+      const slash = path.lastIndexOf('/');
+      const dir = slash >= 0 ? path.substring(0, slash) : '.';
+      const base = slash >= 0 ? path.substring(slash + 1) : path;
+      const abandoned = fs.listFileSync(dir).some((name: string) =>
+        name.startsWith(`${base}.`) && (name.endsWith('.tmp') || name.indexOf('.cas-') >= 0));
+      if (abandoned) throw new Error('记录缺失且有未提交临时版本；须从已核验备份恢复，未自动提升或写空。');
       return '';
     }
-    const promoted = atomicReplaceFile(bestPath, path);
-    if (!promoted.ok) {
-      throw new Error(`status promotion failed ${promoted.message}`);
-    }
-    try {
-      return fs.readTextSync(path);
-    } catch (error) {
-      return '';
-    }
+    const raw = fs.readTextSync(path);
+    if (raw.length < 2) throw new Error('本机记录过短，未覆盖原数据。');
+    JSON.parse(raw);
+    return raw;
   }
 
   private static copyRawIfPresent(context: common.UIAbilityContext, rawPath: string, destName: string,

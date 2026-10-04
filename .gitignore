@@ -35,3 +35,4 @@ entry/src/main/resources/rawfile/geo/
 # Native cores are built from pinned source, never uploaded as opaque binaries
 *.so
 *.a
+entry/src/main/resources/rawfile/pangolin-build.json

@@ -1,7 +1,4 @@
 import heyNative, { NativeResult, SocksSessionNative, RuntimeStats, AppFlowRequest } from 'libheyvpn.so';
-
-// Keep the ABI shape in the native module declaration; this layer owns app naming
-// and the owner-specific stop guard only.
 export { NativeResult, SocksSessionNative, RuntimeStats, AppFlowRequest };
 
 export function setAppRouteCallback(cb: (flow: AppFlowRequest) => void): number {
@@ -67,3 +64,13 @@ export function claimProtectFd(fd: number, token: number): number {
 export function ackProtectFd(fd: number, rc: number, token: number): number {
   return heyNative.ackProtectFd(fd, rc, token);
 }
+
+/** Uses the same per-file flock as atomic replacement; conflict is never overwritten. */
+export function compareReplaceText(path: string, expected: string, value: string): NativeResult {
+  return heyNative.compareReplaceText(path, expected, value);
+}
+export function monotonicMillis(): number { return heyNative.monotonicMillis(); }
+export function systemBootId(): string { return heyNative.systemBootId(); }
+
+export function acquireUserDataLease(path: string): number { return heyNative.acquireUserDataLease(path); }
+export function releaseUserDataLease(token: number): boolean { return heyNative.releaseUserDataLease(token); }

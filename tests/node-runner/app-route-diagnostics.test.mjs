@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -17,7 +18,7 @@ function load(path, deps) {
   vm.runInNewContext(js, {
     module, exports: module.exports, Date, Set, Map, Promise,
     require(name) {
-      if (!(name in deps)) { throw Error('Unexpected import ' + name); }
+      if (!(name in deps)) {const b=legacyBoundary(name);if(b!==undefined)return b;throw Error('Unexpected import '+name);}
       return deps[name];
     }
   });
@@ -91,7 +92,7 @@ const plain = value => JSON.parse(JSON.stringify(value));
 
 const disabled = await AppRouteRuntime.prepare({}, JSON.stringify({ routeMode: 'direct' }), 24000);
 assert.deepEqual(plain(disabled.diagnostics()), {
-  enabled: false, active: false, configuredRules: 0, pending: 0, queries: 0, selected: 0, defaulted: 0,
+  enabled: false, active: false, configuredRules: 0, pending: 0, unresolvedQueries: 0, queries: 0, selected: 0, defaulted: 0,
   rejected: 0, ownerQueryFailed: 0, identityMismatch: 0, overloaded: 0, inactive: 0, ackFailed: 0,
   tcpQueries: 0, udpQueries: 0
 });
@@ -148,7 +149,7 @@ await runtime.resolveFlow(flow(8)); // inactive early return
 
 const diag = plain(runtime.diagnostics());
 assert.deepEqual(diag, {
-  enabled: true, active: false, configuredRules: 1, pending: 0, queries: 5, selected: 2, defaulted: 1,
+  enabled: true, active: false, configuredRules: 1, pending: 0, unresolvedQueries: 0, queries: 5, selected: 2, defaulted: 1,
   rejected: 4, ownerQueryFailed: 1, identityMismatch: 1, overloaded: 1, inactive: 1, ackFailed: 1,
   tcpQueries: 4, udpQueries: 1
 });

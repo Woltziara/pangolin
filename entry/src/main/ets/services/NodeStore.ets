@@ -1,7 +1,8 @@
+import { Revocations } from './Revocations';
 // 穿山 (GPL-3.0) — 节点持久化（nodes.json 的唯一写入方）。
 // 向后兼容契约：NodeCatalog.parseNodeCatalog 读取 name/region/server/port/protocol/outbound
 // 以及测速证据 latencyMs/latencyAt/latencyText；其余未知键忽略。v2 写出必须始终填充
-// 目录六键（见本文件尾部 SCHEMA 注释与 tests/node-runner/redteam-fixes.test.mjs）。
+// 目录六键（见本文件尾部 SCHEMA 注释与 tests/test_import_layer.py）。
 import { common } from '@kit.AbilityKit';
 import { dedupeKeyOfNode } from '../core/NodeDedupe';
 import { formatOutboundJsonToShareLink, ParsedNode } from '../core/ShareLinkParser';
@@ -39,6 +40,7 @@ export class UpsertSummary {
   added: number = 0;
   updated: number = 0;
   skippedDuplicates: number = 0;
+  rotationAmbiguous: boolean = false;
   nodes: Array<StoredNode> = [];
 }
 
@@ -51,27 +53,25 @@ export class NodeStore {
     try {
       const parsed = JSON.parse(raw) as Record<string, Object>;
       const arr = parsed['nodes'];
-      if (arr === undefined || !(arr instanceof Array)) {
-        return [];
-      }
+      if (arr === undefined || !(arr instanceof Array)) throw new Error('nodes schema missing');
       const version = typeof parsed['v'] === 'number' ? parsed['v'] as number : 1;
+      if (version > NODES_SCHEMA_VERSION || version < 1) throw new Error('unsupported nodes schema');
       const now = Date.now();
       const list: Array<StoredNode> = [];
       const items = arr as Array<Object>;
       for (let i = 0; i < items.length; i++) {
         const item = items[i];
         if (item === null || typeof item !== 'object') {
-          continue;
+          throw new Error('invalid node record');
         }
         const node = NodeStore.recordFromJson(item as Record<string, Object>, version, now);
         if (node !== null) {
           list.push(node);
-        }
+        } else { throw new Error('invalid node definition'); }
       }
       return list;
     } catch (error) {
-      console.error(`NodeStore.loadNodes parse failed ${JSON.stringify(error)}`);
-      return [];
+      throw new Error('节点目录无法完整读取，未覆盖原数据；请从已核验的私有备份恢复。');
     }
   }
 
@@ -128,8 +128,21 @@ export class NodeStore {
         }
         seenIncoming.add(scoped);
       }
-      const matched = scoped.length > 0 ? byScoped.get(scoped) : undefined;
+      let matched = scoped.length > 0 ? byScoped.get(scoped) : undefined;
+      // A subscription can rotate only its credential while keeping the same
+      // endpoint and transport. Preserve the user's pinned node ID only when
+      // both the old and the new catalog have exactly one such node.
+      if (matched === undefined && sourceId.startsWith('sub-')) {
+        const oldPeers = existing.filter((node: StoredNode) =>
+          node.sourceId === sourceId && NodeStore.credentialRotationOnly(node, p));
+        const newPeers = parsed.filter((item: ParsedNode) =>
+          item.name === p.name && item.server === p.server && item.port === p.port &&
+          item.protocol === p.protocol && NodeStore.credentialRotationOnly(oldPeers.length === 1 ? oldPeers[0] : new StoredNode(), item));
+        if (oldPeers.length === 1 && newPeers.length === 1) matched = oldPeers[0];
+        else if (oldPeers.length > 0 && newPeers.length > 1) summary.rotationAmbiguous = true;
+      }
       if (matched !== undefined) {
+        const rotated = dedupeKeyOfNode(matched.protocol, matched.outboundJson, matched.rawLink) !== ident;
         matched.name = p.name;
         matched.region = p.region;
         matched.server = p.server;
@@ -140,10 +153,13 @@ export class NodeStore {
           matched.rawLink = p.rawLink;
         }
         matched.updatedAt = now;
+        if (rotated) { matched.latencyMs = -1; matched.latencyText = ''; matched.latencyAt = 0; }
+        if (scoped.length > 0) byScoped.set(scoped, matched);
         summary.updated++;
         continue;
       }
       const fresh = NodeStore.storedFromParsed(p, sourceId, now);
+      if (merged.some((node: StoredNode) => node.id === fresh.id)) throw new Error('节点 ID 冲突，未覆盖原节点或改变选择。');
       merged.push(fresh);
       if (scoped.length > 0) {
         byScoped.set(scoped, fresh);
@@ -158,7 +174,7 @@ export class NodeStore {
    * 订阅刷新合并：保留 latency/favorite/customName/group（由 mergeParsedNodes 保证），
    * 并移除该订阅本次没有返回的节点。
    */
-  static mergeRuntime(context: common.Context, parsed: Array<ParsedNode>, sourceId: string): UpsertSummary {
+  static mergeRuntime(context: common.Context, parsed: Array<ParsedNode>, sourceId: string, allowPrune: boolean = true): UpsertSummary {
     const existing = NodeStore.loadNodes(context);
     const summary = NodeStore.mergeParsedNodes(existing, parsed, sourceId);
     const merged = summary.nodes;
@@ -172,7 +188,7 @@ export class NodeStore {
     const kept: Array<StoredNode> = [];
     for (let i = 0; i < merged.length; i++) {
       const node = merged[i];
-      if (node.sourceId !== sourceId) {
+      if (!allowPrune || summary.rotationAmbiguous || node.sourceId !== sourceId) {
         kept.push(node);
         continue;
       }
@@ -242,6 +258,7 @@ export class NodeStore {
       }
     }
     if (removed > 0) {
+      Revocations.revoke(context, ids.map((id: string) => `node:${id}`));
       NodeStore.saveNodes(context, kept);
     }
     return removed;
@@ -416,6 +433,24 @@ export class NodeStore {
 
   static scopedDedupeKey(sourceId: string, identity: string): string {
     return `${sourceId}\n${identity}`;
+  }
+
+  private static credentialRotationOnly(oldNode: StoredNode, next: ParsedNode): boolean {
+    if (oldNode.name !== next.name || oldNode.region !== next.region ||
+      oldNode.server !== next.server || oldNode.port !== next.port ||
+      oldNode.protocol !== next.protocol || next.protocol.toLowerCase() !== 'trojan') return false;
+    try {
+      const old = JSON.parse(oldNode.outboundJson) as Record<string, Object>;
+      const incoming = JSON.parse(next.outboundJson) as Record<string, Object>;
+      const oldServers = (old['settings'] as Record<string, Object>)['servers'] as Array<Record<string, Object>>;
+      const newServers = (incoming['settings'] as Record<string, Object>)['servers'] as Array<Record<string, Object>>;
+      if (oldServers.length !== 1 || newServers.length !== 1 ||
+        typeof oldServers[0]['password'] !== 'string' || typeof newServers[0]['password'] !== 'string' ||
+        (oldServers[0]['password'] as string).length === 0 || (newServers[0]['password'] as string).length === 0 ||
+        oldServers[0]['password'] === newServers[0]['password']) return false;
+      oldServers[0]['password'] = ''; newServers[0]['password'] = '';
+      return JSON.stringify(old) === JSON.stringify(incoming);
+    } catch (_error) { return false; }
   }
 
   /** 稳定 id：去重键的 FNV-1a 哈希。已有记录保留原 id；新副本按来源区分以免碰撞。 */

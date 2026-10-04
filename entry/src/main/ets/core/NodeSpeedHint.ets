@@ -27,14 +27,6 @@ export function nodeSpeedHint(selectedId: string, region: string, samples: NodeS
   if (selected === undefined) { result.current = '当前节点未取得结果，请重测'; return result; }
   const reachable = samples.filter((sample: NodeSpeedEntry) => Number.isFinite(sample.milliseconds) && sample.milliseconds >= 0);
   if (reachable.length === 0) { result.tip = '本轮没有测到可达节点，请稍后重试。'; return result; }
-  if (samples.length === 1) { result.tip = '没有其他同地区节点可比较。'; return result; }
-  reachable.sort((a: NodeSpeedEntry, b: NodeSpeedEntry) => a.milliseconds - b.milliseconds);
-  const best = reachable[0];
-  if (selected !== undefined && selected.milliseconds >= 0 && selected.milliseconds === best.milliseconds) {
-    result.tip = `当前节点已是本轮${region}最低延迟 · ${best.milliseconds} ms`;
-  } else {
-    result.tip = `${region}本轮更快：${best.label} · ${best.milliseconds} ms`;
-    result.recommendedId = best.id;
-  }
+  result.tip = '这里只测节点端口。端口能连仍可能无法代理上网；请以当前线路的访问检测为准。';
   return result;
 }

@@ -25,7 +25,6 @@ import {
   USER_RULE_ACTION_GROUP,
   USER_RULE_ACTION_PROXY
 } from '../core/UserRuleMap';
-import { BACKGROUND_KEEP_ALIVE } from '../services/BackgroundKeepAlive';
 import { CONNECTION_CONTROLLER } from '../services/ConnectionController';
 import { NodeStore, StoredNode } from '../services/NodeStore';
 import {
@@ -98,7 +97,7 @@ export struct Rules {
   private afterRuleChange(): void {
     this.onInteraction();
     this.reload();
-    this.feedback = this.isConnected() ? '已保存，尚未应用到本次连接。' : '已保存，下次连接时应用。';
+    this.feedback = this.isConnected() ? '规则已保存。回首页点“应用并连接”。' : '规则已保存，下次连接时生效。';
   }
 
   private async reconnectNow(): Promise<void> {
@@ -109,16 +108,13 @@ export struct Rules {
     this.busy = true;
     try {
       const startEpoch = CONNECTION_CONTROLLER.beginStartIntent();
-      if (this.isConnected()) { await CONNECTION_CONTROLLER.stop(ctx, false); }
-      if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) {
-        return;
+      await CONNECTION_CONTROLLER.preflight(ctx);
+      if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) return;
+      if (this.isConnected()) {
+        const stopped = await CONNECTION_CONTROLLER.stop(ctx, false);
+        if (stopped.phase !== 'STOPPED') throw new Error('旧连接还在处理。请回首页点“恢复连接”，然后再应用规则。');
       }
-      const keep = await BACKGROUND_KEEP_ALIVE.ensure(ctx, 'Rules.reconnect');
       if (!CONNECTION_CONTROLLER.isStartIntentLive(startEpoch)) {
-        return;
-      }
-      if (!keep) {
-        promptAction.showToast({ message: '暂时无法保持后台连接，请回到连接页重试。' });
         return;
       }
       await CONNECTION_CONTROLLER.start(ctx, MODE_FULL, startEpoch);
@@ -127,7 +123,7 @@ export struct Rules {
     } finally {
       this.busy = false;
       this.reload();
-      this.feedback = this.applied ? '配置已载入。' : '尚未确认载入，请查看连接状态。';
+      this.feedback = this.applied ? '规则已生效。' : '规则尚未生效，请回首页恢复连接后重试。';
     }
   }
 

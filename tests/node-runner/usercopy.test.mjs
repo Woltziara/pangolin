@@ -1,28 +1,31 @@
 import assert from 'node:assert/strict';
 import { connectionCopy, publicFailure, redactDiagnosticText } from './build/UserFacingCopy.js';
 let count=0;
+assert.equal(connectionCopy('UNPROVEN',false,true,'check-failed',true).title,'点一下修复连接');
+assert.equal(connectionCopy('UNPROVEN',false,true,'checking',true).title,'正在检查连接');
+assert.equal(connectionCopy('UNPROVEN',false,true,'unverified',true).title,'检查一下连接');
 function test(name, fn) { fn(); console.log('ok - '+name); count++; }
 test('stale success never claims online or disconnected',()=>{
- const s=connectionCopy('CANARY_OK',true,true); assert.equal(s.title,'连接状态待确认'); assert(s.needsHelp);
+ const s=connectionCopy('CANARY_OK',true,true); assert.equal(s.title,'正在检查连接'); assert.notEqual(s.title,'网络正常');
 });
 test('unproven routing evidence is not falsely called unusable traffic',()=>{
  assert.equal(connectionCopy('UNPROVEN',false,true).title,'正在检查连接');
- assert.equal(connectionCopy('DEGRADED_UNPROVEN',false,true).title,'连接状态待确认');
- assert.equal(connectionCopy('CANARY_OK',false,true).title,'已连接');
+ assert.equal(connectionCopy('DEGRADED_UNPROVEN',false,true).title,'先检测连接');
+ assert.equal(connectionCopy('CANARY_OK',false,true).title,'隧道已建立 · 待检测');
 });
 test('fresh reachability can pass independently of unavailable routing logs',()=>{
- assert.equal(connectionCopy('DEGRADED_UNPROVEN',false,true,'reachable').title,'已连接');
- assert.equal(connectionCopy('UNPROVEN',false,true,'check-failed').title,'连接需检查');
- assert.equal(connectionCopy('CANARY_OK',false,true,'unverified').title,'连接状态待确认');
+ assert.equal(connectionCopy('DEGRADED_UNPROVEN',false,true,'reachable').title,'网络正常');
+ assert.equal(connectionCopy('UNPROVEN',false,true,'check-failed').title,'点一下修复连接');
+ assert.equal(connectionCopy('CANARY_OK',false,true,'unverified').title,'检查一下连接');
  assert.equal(connectionCopy('CANARY_OK',false,true,'offline').title,'连接已中断');
 });
 test('stop error and stale runtime override a remembered success',()=>{
  assert.equal(connectionCopy('STOPPED',false,true,'reachable').title,'已断开');
- assert.notEqual(connectionCopy('ERROR',false,true,'reachable').title,'已连接');
- assert.notEqual(connectionCopy('CANARY_OK',true,true,'reachable').title,'已连接');
+ assert.notEqual(connectionCopy('ERROR',false,true,'reachable').title,'网络正常');
+ assert.notEqual(connectionCopy('CANARY_OK',true,true,'reachable').title,'网络正常');
 });
 test('unknown future phase is not silently shown as disconnected',()=>{
- assert.equal(connectionCopy('FUTURE_PHASE',false,true).title,'连接状态待确认');
+ assert.equal(connectionCopy('FUTURE_PHASE',false,true).title,'需要检查连接');
 });
 test('empty catalog gives an actionable import instruction',()=>{
  assert.match(connectionCopy('IDLE',false,false).detail,/添加/);

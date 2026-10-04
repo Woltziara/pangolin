@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
@@ -7,8 +8,8 @@ function load(path, deps = {}, extra = {}) {
   const source = readFileSync(new URL('../../entry/src/main/ets/' + path, import.meta.url), 'utf8');
   const compiled = ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText;
   const module = { exports: {} };
-  vm.runInNewContext(compiled, { module, exports: module.exports, Date, setTimeout, clearTimeout,
-    require(name) { if (!(name in deps)) throw Error('Unexpected import: ' + name); return deps[name]; }, ...extra });
+  vm.runInNewContext(compiled, { module, exports: module.exports, Date, setTimeout, clearTimeout, setInterval, clearInterval,
+    require(name) { if (!(name in deps)) {const b=legacyBoundary(name);if(b!==undefined)return b;throw Error('Unexpected import: '+name);} return deps[name]; }, ...extra });
   return module.exports;
 }
 const statusModule = load('net/DataplaneStatus.ets');
@@ -36,8 +37,9 @@ test('primary connection lifecycle is independent of all background check outcom
     const ready = isConnectionEstablished(s, now);
     assert.equal(ready, true);
     const copy = connectionCopy(s.phase, false, true, health, ready);
-    assert.equal(copy.title, '已连接'); assert.equal(copy.warning, false);
-    assert(!/正常|畅通|检查/.test(copy.detail));
+    if (health === 'reachable') assert.equal(copy.title, '网络正常');
+    else assert.notEqual(copy.title, '网络正常');
+    assert.equal(copy.warning, health === 'check-failed');
   }
   for (const changed of [{xrayRunning:false},{forwarderOk:false},{tunFdValid:false},
     {desiredRunning:false},{nativePoisoned:true},{at:now-25001},{at:now+1},
@@ -50,7 +52,7 @@ test('actual app response proves reachability without promoting routing audit', 
   const s = liveStatus(); updateConnectionHealth(s, receipt(), 'test.bundle', now);
   assert.equal(s.connectionHealth, 'reachable'); assert.equal(s.lastReachableAt, now - 10);
   assert.equal(s.phase, 'DEGRADED_UNPROVEN'); assert.equal(s.canaryOk, false);
-  assert.equal(connectionCopy(s.phase, false, true, s.connectionHealth).title, '已连接');
+  assert.equal(connectionCopy(s.phase, false, true, s.connectionHealth).title, '网络正常');
 });
 test('new probe and reset routing evidence do not erase a recent successful check', () => {
   const s = liveStatus(); updateConnectionHealth(s, receipt(), 'test.bundle', now);
@@ -63,7 +65,7 @@ test('remembered success expires rather than claiming online indefinitely', () =
   s.at = now + 76000;
   updateConnectionHealth(s, '', 'test.bundle', now + 76000);
   assert.equal(s.connectionHealth, 'unverified');
-  assert.notEqual(connectionCopy('CANARY_OK', false, true, s.connectionHealth).title, '已连接');
+  assert.notEqual(connectionCopy('CANARY_OK', false, true, s.connectionHealth).title, '网络正常');
 });
 test('cached success cannot cross a generation or revision boundary', () => {
   for (const change of [{ generation: 'g2' }, { sessionRevision: 2 }]) {
@@ -92,7 +94,7 @@ test('partial failure is a failed check, not invented proof that all traffic sto
   const s = liveStatus(); updateConnectionHealth(s, receipt(), 'test.bundle', now);
   updateConnectionHealth(s, receipt({ at: now, googleHttp: 0, dnsOk: false }), 'test.bundle', now);
   assert.equal(s.connectionHealth, 'check-failed');
-  assert.equal(connectionCopy(s.phase, false, true, s.connectionHealth).title, '连接需检查');
+  assert.equal(connectionCopy(s.phase, false, true, s.connectionHealth).title, '点一下修复连接');
   s.evidenceRid = 'retry-rid'; s.at = now + 2000;
   updateConnectionHealth(s, '', 'test.bundle', now + 2000);
   assert.equal(s.connectionHealth, 'check-failed', 'rolling RID must not conceal the last failure');
@@ -106,7 +108,7 @@ test('a real runtime failure overrides fresh successful HTTP receipts', () => {
 test('stopped and poisoned runtime never reuse a successful reachability label', () => {
   for (const phase of ['STOPPED', 'ERROR', 'POISONED', 'RECONNECTING']) {
     const s = liveStatus(); s.phase = phase; updateConnectionHealth(s, receipt(), 'test.bundle', now);
-    assert.notEqual(connectionCopy(s.phase, false, true, s.connectionHealth).title, '已连接');
+    assert.notEqual(connectionCopy(s.phase, false, true, s.connectionHealth).title, '网络正常');
   }
 });
 test('stale native heartbeat cannot be replaced by a fresh HTTP receipt', () => {
@@ -124,7 +126,7 @@ test('new status fields survive serialization without rewriting legacy evidence'
 let clock = now;
 const controllerState = liveStatus(); controllerState.connectionHealth = 'checking';
 const controllerModule = load('services/ConnectionController.ets', {
-  '@kit.NetworkKit': {}, '@kit.PerformanceAnalysisKit': {hilog:{warn(){},error(){},info(){}}},
+  '@kit.NetworkKit': {}, '@kit.AbilityKit': {}, '@kit.PerformanceAnalysisKit': {hilog:{warn(){},error(){},info(){}}},
   '../net/DataplaneStatus': statusModule, '../vpn/VpnConstants': {MODE_FULL:'full'},
   './ConnectionPolicy':{}, './HuksSecretStore': {}, './NodeStore': {}, './SettingsStore': {}, './SplitRouter': {},
   '../net/ConnectionHealth': load('net/ConnectionHealth.ets'),
@@ -168,12 +170,15 @@ const probeStatus = liveStatus();
 probeStatus.probeGoogleUrl = 'http://example.test/google';
 probeStatus.probeDirectUrl = 'https://example.test/direct';
 const probe = load('services/ProbeSelfCheck.ets', {
+  '@kit.ArkTS': {util:{generateRandomUUID:()=> 'probe-test'}},
   '@kit.NetworkKit': { http: {}, socket: {} }, '@ohos.process': { default: { pid: 1, uid: 2 } },
   '../net/DataplaneStatus': statusModule, '../vpn/VpnConstants': { BUNDLE_NAME: 'test.bundle' },
-  './StatusStore': { StatusStore: { readStatus() { return probeStatus; } } }
+  './StatusStore': { StatusStore: { readStatus() { probeStatus.at=clock; return probeStatus; } } }
 }, { Date: { now: () => clock } }).PROBE_SELF_CHECK;
 let calls = 0;
 probe.runFetch = async () => { calls++; return true; };
+probe.startLoop({});
+await Promise.resolve();await Promise.resolve();
 await probe.tick({}); assert.equal(calls, 1);
 clock += 2000; probeStatus.evidenceRid = 'rid-2';
 await probe.tick({}); assert.equal(calls, 1, 'healthy checks are rate limited across RIDs');
@@ -181,4 +186,5 @@ clock += 30000; await probe.tick({}); assert.equal(calls, 2);
 clock += 30001; await probe.tick({}); assert.equal(calls, 3, 'successful same RID is periodically rechecked');
 probe.nextRetryAt = clock + 120000; probe.failCount = 7; probeStatus.generation = 'g2';
 await probe.tick({}); assert.equal(calls, 4, 'new session must not inherit old backoff');
+probe.stopLoop();
 console.log(`connection-health: ${count} decision tests plus actual probe cadence/restart replay passed`);

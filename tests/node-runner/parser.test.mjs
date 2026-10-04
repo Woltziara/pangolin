@@ -138,6 +138,34 @@ test('minimal Clash YAML with 2 proxies', () => {
   assert.equal(trojanOutbound.streamSettings.tlsSettings.serverName, 'us2.example.com');
 });
 
+test('Clash YAML bare list markers preserve every proxy and nested ALPN', () => {
+  const yaml = `# subscription-url: https://example.com/sub?token=fixture
+proxies:
+  -
+    name: first
+    type: trojan
+    server: first.example.com
+    port: 443
+    password: fixture-one
+    alpn:
+      - h2
+      - http/1.1
+  -
+    name: second
+    type: trojan
+    server: second.example.com
+    port: 443
+    password: fixture-two
+    alpn:
+      - h2
+`;
+  const result = sub.parseSubscriptionContent(yaml);
+  assert.equal(result.nodes.length, 2);
+  assert.deepEqual(result.nodes.map((n) => n.name), ['first', 'second']);
+  const first = JSON.parse(result.nodes[0].outboundJson);
+  assert.deepEqual(first.streamSettings.tlsSettings.alpn, ['h2', 'http/1.1']);
+});
+
 test('garbage input yields zero nodes, unknown format', () => {
   const outcome = sub.parseSubscriptionContent(read('garbage.txt'));
   assert.equal(outcome.nodes.length, 0);

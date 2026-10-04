@@ -22,9 +22,9 @@ class HapAuditTest(unittest.TestCase):
         self.assertIn("hev-socks5-tunnel", text)
         self.assertIn("GPL-3.0", text)
 
-    def test_hap_has_no_secrets_or_experiment_libs(self) -> None:
+    def test_signed_hap_has_no_secrets_or_experiment_libs(self) -> None:
         if not HAP.is_file():
-            self.skipTest("HAP not built; run scripts/build.sh or set PANGOLIN_HAP")
+            self.skipTest("signed hap not built yet")
         names: list[str] = []
         with zipfile.ZipFile(HAP) as zf:
             names = zf.namelist()

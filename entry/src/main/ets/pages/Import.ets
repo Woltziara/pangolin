@@ -46,6 +46,8 @@ struct Import {
   @State previewFailures: Array<ShareLinkFailure> = [];
   @State previewUrl: string = '';
   @State previewSourceId: string = SOURCE_IMPORT;
+  @State previewFromFile: boolean = false;
+  @State offlineSubscriptionUrl: string = '';
   // 手动添加表单
   @State manualName: string = '';
   @State manualProtocol: string = 'vless';
@@ -170,8 +172,8 @@ struct Import {
         this.lastError = '文件是空的，没有可导入的内容。';
         return;
       }
-      this.pasteText = text;
-      this.runTextPreview(text);
+      this.pasteText = '';
+      this.runTextPreview(text, true);
     } catch (error) {
       if (!this.isUserCancelled(error)) {
         this.lastError = UiFeedback.failure(this.context, 'file-import', error, '未能读取文件，请重新选择可访问的配置文件。');
@@ -322,7 +324,7 @@ struct Import {
 
   // ---------- 统一预览确认流 ----------
 
-  private runTextPreview(text: string): void {
+  private runTextPreview(text: string, fromFile: boolean = false): void {
     this.pasteController.stopEditing();
     const ctx = this.context;
     if (ctx === null) {
@@ -330,6 +332,16 @@ struct Import {
       return;
     }
     this.lastError = '';
+    this.previewFromFile = fromFile;
+    this.offlineSubscriptionUrl = '';
+    if (fromFile) {
+      const firstLine = text.split('\n')[0].trim();
+      const marker = '# subscription-url:';
+      if (firstLine.startsWith(marker)) {
+        const candidate = firstLine.substring(marker.length).trim();
+        if (candidate.startsWith('https://')) this.offlineSubscriptionUrl = candidate;
+      }
+    }
     try {
     const preview: ImportPreview = SubscriptionManager.importFromText(ctx, text);
     if (preview.kind === 'subscription-url') {
@@ -415,6 +427,21 @@ struct Import {
     const summary: CommitSummary = SubscriptionManager.commitImport(ctx, nodes, this.previewSourceId);
     promptAction.showToast({ message: `已添加 ${summary.added} 个节点，跳过 ${summary.skippedDuplicates} 个重复` });
     router.back();
+  }
+
+  private confirmOfflineSubscription(): void {
+    const ctx = this.context;
+    if (ctx === null || this.busy || !this.previewFromFile || this.previewItems.length === 0) return;
+    this.busy = true;
+    try {
+      const ready = this.previewItems.filter((item: PreviewItem) => item.runError.length === 0)
+        .map((item: PreviewItem) => item.node);
+      const result = SubscriptionManager.commitOfflineSubscription(ctx, this.offlineSubscriptionUrl, ready);
+      promptAction.showToast({ message: `已保留 ${result.nodeCount} 个本地节点；在线更新待确认` });
+      router.replaceUrl({ url: 'pages/Subscriptions' });
+    } catch (error) {
+      this.lastError = UiFeedback.failure(ctx, 'subscription-offline-import', error, '本地配置未完整导入，请检查文件和订阅地址。');
+    } finally { this.busy = false; }
   }
 
   private cancelPreview(): void {
@@ -530,7 +557,7 @@ struct Import {
           .fontWeight(FontWeight.Medium)
           .fontColor($r('sys.color.ohos_id_color_text_primary_activated'))
           .width('100%')
-        Text('添加后可以在“订阅”页更新节点。原始参数会保留，本版连接默认校验证书；证书不匹配时会提示错误，不会自动关闭校验。')
+        Text('添加后可在“订阅”页更新节点。连接时会校验证书；不匹配请检查节点配置。')
           .fontSize(13)
           .fontColor($r('sys.color.ohos_id_color_text_secondary'))
           .width('100%')
@@ -562,6 +589,16 @@ struct Import {
           .fontWeight(FontWeight.Medium)
           .fontColor($r('sys.color.ohos_id_color_text_primary'))
           .width('100%')
+        if (this.previewFromFile) {
+          Text('文件中的节点可先保存使用；以后仍可用原订阅地址尝试在线更新。')
+            .fontSize(13).width('100%')
+          TextInput({ placeholder: '这份文件对应的 HTTPS 订阅地址', text: this.offlineSubscriptionUrl })
+            .type(InputType.Password)
+            .onChange((value: string) => { this.offlineSubscriptionUrl = value; })
+            .width('100%')
+          Button('保存为订阅并添加节点').enabled(!this.busy && this.offlineSubscriptionUrl.trim().length > 0)
+            .onClick(() => { this.confirmOfflineSubscription(); })
+        }
 
         if (this.duplicateCount() > 0) {
           Text(`其中 ${this.duplicateCount()} 个与现有节点重复，将被跳过`)

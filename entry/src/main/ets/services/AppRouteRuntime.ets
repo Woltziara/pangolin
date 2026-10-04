@@ -1,3 +1,5 @@
+import { deadline } from './AsyncDeadline';
+import { AppRouteCapability } from './AppRouteCapability';
 import { bundleManager, common } from '@kit.AbilityKit';
 import { connection } from '@kit.NetworkKit';
 import { AppNodePort, AppRoutePayload, AppUidBinding, addUidBinding, parseAppRoutePayload, portForUid } from '../core/AppRoutePayload';
@@ -14,6 +16,7 @@ export class AppRouteRuntime {
   private enabled: boolean = false;
   private active: boolean = false;
   private resolving: number = 0;
+  private unresolvedQueries: number = 0;
   private context: common.Context;
   private observed: ObservedApp[] = [];
   private recorded: Set<number> = new Set<number>();
@@ -42,6 +45,7 @@ export class AppRouteRuntime {
     const app = parseAppRoutePayload(parsed['appRouting']);
     runtime.enabled = app.config.enabled;
     if (!runtime.enabled) { return runtime; }
+    await AppRouteCapability.check(app.config);
     try { runtime.observed = AppCatalog.observed(context).slice(0, 128); } catch (error) { runtime.observed = []; }
     for (let i = 0; i < app.config.rules.length; i++) {
       const rule = app.config.rules[i];
@@ -93,7 +97,7 @@ export class AppRouteRuntime {
     out['enabled'] = this.enabled;
     out['active'] = this.active;
     out['configuredRules'] = this.bindings.length;
-    out['pending'] = this.resolving;
+    out['pending'] = this.resolving; out['unresolvedQueries'] = this.unresolvedQueries;
     out['queries'] = this.queries;
     out['selected'] = this.selected;
     out['defaulted'] = this.defaulted;
@@ -120,7 +124,7 @@ export class AppRouteRuntime {
       this.ack(flow, -1, 0);
       return;
     }
-    if (this.resolving >= 128) {
+    if (this.resolving >= 128 || this.unresolvedQueries >= 128) {
       this.overloaded += 1;
       this.rejected += 1;
       this.ack(flow, -1, 0);
@@ -137,11 +141,11 @@ export class AppRouteRuntime {
       const remote: connection.NetAddress = { address: flow.destinationAddress,
         family: flow.family === 6 ? 2 : 1, port: flow.destinationPort };
       const protocol = flow.protocol === 6 ? connection.ProtocolType.PROTO_TYPE_TCP : connection.ProtocolType.PROTO_TYPE_UDP;
-      const uid = await connection.getConnectOwnerUid(protocol, local, remote);
+      const uid = await this.boundedQuery(connection.getConnectOwnerUid(protocol, local, remote));
       port = portForUid(uid, this.bindings, this.ports);
       if (port > 0) {
         // Confirm identity as well as UID: an uninstall/reinstall must not redirect a different app.
-        const bundle = await bundleManager.getBundleNameByUid(uid);
+        const bundle = await this.boundedQuery(bundleManager.getBundleNameByUid(uid));
         if (!this.bindings.some((item: AppUidBinding) => item.uid === uid && item.bundleName === bundle)) {
           this.identityMismatch += 1;
           port = -1;
@@ -167,6 +171,14 @@ export class AppRouteRuntime {
       this.selected += 1;
     }
     this.ack(flow, port < 0 ? -1 : port === 0 ? 1 : 0, Math.max(0, port));
+  }
+
+  private async boundedQuery<T>(work: Promise<T>): Promise<T> {
+    this.unresolvedQueries += 1;
+    const tracked = work.then((value: T) => { this.unresolvedQueries -= 1; return value; }, (error: Object) => {
+      this.unresolvedQueries -= 1; throw error as Error;
+    });
+    return deadline(tracked, 2500, 'App 身份查询超时');
   }
 
   private async observe(uid: number): Promise<void> {

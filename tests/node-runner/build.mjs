@@ -35,6 +35,6 @@ for (const file of PURE_FILES) {
   copyFileSync(source, join(srcDir, file.replace(/\.ets$/, '.ts')));
 }
 
-const tsc = join(here, 'node_modules', '.bin', 'tsc');
-execFileSync(tsc, ['-p', join(here, 'tsconfig.json')], { stdio: 'inherit' });
+const tsc = join(here, 'node_modules', 'typescript', 'bin', 'tsc');
+execFileSync(process.execPath, [tsc, '-p', join(here, 'tsconfig.json')], { stdio: 'inherit' });
 console.log('node-runner build ok');

@@ -1,3 +1,4 @@
+import { Revocations } from './Revocations';
 // 穿山 (GPL-3.0) — 订阅源持久化（subscriptions.json v1）。
 // 存储结构：[{id,name,url,enabled,autoUpdate,intervalHours,lastUpdateAt,lastError,
 //   userinfo:{upload,download,total,expire}|null,nodeCount}]
@@ -37,24 +38,21 @@ export class SubscriptionStore {
     }
     try {
       const arr = JSON.parse(raw) as Array<Object>;
-      if (!(arr instanceof Array)) {
-        return [];
-      }
+      if (!(arr instanceof Array)) throw new Error('unsupported subscription schema');
       const list: Array<SubscriptionRecord> = [];
       for (let i = 0; i < arr.length; i++) {
         const item = arr[i];
         if (item === null || typeof item !== 'object') {
-          continue;
+          throw new Error('invalid subscription record');
         }
         const record = SubscriptionStore.recordFromJson(item as Record<string, Object>);
         if (record !== null) {
           list.push(record);
-        }
+        } else { throw new Error('invalid subscription record'); }
       }
       return list;
     } catch (error) {
-      console.error(`SubscriptionStore.load parse failed ${JSON.stringify(error)}`);
-      return [];
+      throw new Error('订阅目录无法完整读取，未覆盖原数据。');
     }
   }
 
@@ -108,6 +106,7 @@ export class SubscriptionStore {
       }
     }
     if (found) {
+      Revocations.revoke(context, [`source:${id}`]);
       SubscriptionStore.save(context, kept);
     }
     return found;

@@ -10,6 +10,8 @@
     "pages/AppRoutes",
     "pages/Diagnostics",
     "pages/About",
-    "pages/SkinPreview"
+    "pages/SkinPreview",
+    "pages/Recovery",
+    "pages/ConnectionRecovery"
   ]
 }

@@ -101,6 +101,10 @@ git apply "$ROOT_DIR/native/patches/hev-app-routing.patch"
 APPLIED_INPUTS+=( "native/patches/hev-app-routing.patch" )
 python3 "$ROOT_DIR/native/patches/hev-tun-progress.py" "$SRC_DIR"
 APPLIED_INPUTS+=( "native/patches/hev-tun-progress.py" )
+git apply --check "$ROOT_DIR/native/patches/hev-tcp-restart-cleanup.patch"
+git apply "$ROOT_DIR/native/patches/hev-tcp-restart-cleanup.patch"
+APPLIED_INPUTS+=( "native/patches/hev-tcp-restart-cleanup.patch" )
+HEV_SOURCE_DIR="$SRC_DIR" python3 "$ROOT_DIR/tests/hev_tcp_restart_test.py"
 git diff --check
 
 # Exercise the actual fork's first-packet callback contract before publishing

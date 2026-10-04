@@ -40,12 +40,13 @@
     "tag": "2.17.1",
     "commit": "9a06bc6",
     "artifact": "entry/src/main/cpp/prebuilt/arm64-v8a/libhevsocks5tun.so",
-    "sha256": "546ef955cfef0820e0ba631ece6fc2ad611e2bd46316f333afac96dd3ab9986f",
-    "packedSha256": "9dc50bb7df39b7797ca06433097172dff2566209273c6598f5531f2644222acb",
+    "sha256": "5ee3d3efa4f996e54d9bc205f7351d11dad41aa56321667e84b960c3ca27462b",
+    "packedSha256": "d3dbc4c7170b6745c2ed6200ebf6bde3151b07fa3cc6eea5a3645c65cfcf342d",
     "frozenSha256": "2a38605507d80c0749e309f2f6de8b6c5200d9114a0ea97d4844248ab062bc60",
     "diagnostic": "udp-counters-v1",
     "fix": "socket-demand-events-v2",
-    "appRouting": "per-session-uid-v1"
+    "appRouting": "per-session-uid-v1",
+    "restartCleanup": "tcp-pcb-drain-v1"
   },
   "patches": [
     "native/patches/libxray-cgohello.patch",
@@ -60,6 +61,7 @@
     "native/patches/hev-socket-wait-events.patch",
     "native/patches/hev-app-routing.patch",
     "native/patches/app-flow-route.h",
-    "native/patches/hev-tun-progress.py"
+    "native/patches/hev-tun-progress.py",
+    "native/patches/hev-tcp-restart-cleanup.patch"
   ]
 }

@@ -1,0 +1,53 @@
+import assert from 'node:assert/strict';
+import {readFileSync,statSync} from 'node:fs';
+import {resolve} from 'node:path';
+import vm from 'node:vm';
+import ts from 'typescript';
+import {etsRoot,makeLoader} from './helpers/ets-loader.mjs';
+
+const path=resolve(etsRoot,'components/PangolinCompanion.ets');
+const source=readFileSync(path,'utf8').replace('export struct PangolinCompanion {','class PangolinCompanion {');
+const ast=ts.createSourceFile(path,source,ts.ScriptTarget.Latest,true);
+const cls=ast.statements.find(n=>ts.isClassDeclaration(n)&&n.name?.text==='PangolinCompanion');
+assert(cls);
+const bodies=['changed','beginState','finishRun','images'].map(name=>{
+ const method=cls.members.find(n=>n.name?.getText(ast)===name);assert(method);return method.getText(ast);
+}).join('\n');
+const motion=makeLoader()('core/PangolinMotion.ets');
+const scope={pangolinFrames:motion.pangolinFrames,console};
+vm.runInNewContext(ts.transpileModule(`class Companion{${bodies}}globalThis.Companion=Companion;`,
+ {compilerOptions:{target:ts.ScriptTarget.ES2020}}).outputText,scope);
+const pet=new scope.Companion();
+Object.assign(pet,{state:'connecting',visible:true,allowPlayback:true,systemReduced:false,reduceMotion:false,runKey:0});
+pet.changed();const introKey=pet.runKey;
+assert.equal(pet.frames.at(-1).pose,'walk_02');assert(pet.playing);
+pet.finishRun(introKey);const walkingKey=pet.runKey;
+assert.equal(pet.activeAnimationState,'walking');assert.equal(pet.frames.at(-1).pose,'walk_08');assert(pet.playing);
+assert.deepEqual(Array.from(pet.frames,f=>f.pose),Array.from({length:8},(_,i)=>`walk_0${i+1}`));
+assert(pet.frames.every(f=>f.duration===90));
+assert.match(source,/ImageAnimator\(\)\.images\(this\.images\(\)\)\.iterations\(this\.activeAnimationState === 'walking' \? -1 : 1\)/);
+assert.doesNotMatch(source,/walkMix|advanceWalk|\.opacity\(/,'walking should use real poses, not a two-image ghosted blend');
+for(let i=1;i<=8;i++)assert(statSync(resolve(etsRoot,`../resources/base/media/pangolin_walk_0${i}.png`)).size>100000);
+assert.equal(pet.runKey,walkingKey,'walking keeps the same mounted component');
+pet.changed();assert.equal(pet.runKey,walkingKey,'unchanged connection state does not restart the animation');
+assert.equal(pet.activeAnimationState,'walking');assert(pet.playing,'walking continues without rebuilding the component');
+const finalWalkingKey=pet.runKey;
+pet.state='connected';pet.changed();
+assert.equal(pet.queuedState,'','completed network result interrupts the infinite walk');
+assert.equal(pet.runKey,finalWalkingKey+1);assert.equal(pet.frames[0].pose,'wait');
+assert.equal(pet.frames[1].pose,'unplant');assert.equal(pet.frames[2].pose,'plant');assert.equal(pet.frames.at(-1).pose,'ready');
+pet.finishRun(finalWalkingKey+1);assert.equal(pet.playing,false);
+pet.state='disconnecting';pet.changed();const disconnectKey=pet.runKey;
+assert.deepEqual(Array.from(pet.frames,f=>f.pose),['ready','plant','unplant','stow','rest']);
+pet.state='idle';pet.changed();assert.equal(pet.runKey,disconnectKey,'early OS stop does not cut off flag stowing');
+pet.finishRun(disconnectKey);assert.equal(pet.playing,false);
+pet.state='connected';pet.changed();const plantingKey=pet.runKey;
+pet.state='disconnecting';pet.changed();assert.equal(pet.runKey,plantingKey,'let the flag plant frame finish before unplanting');
+pet.state='idle';pet.changed();pet.finishRun(plantingKey);
+assert.equal(pet.activeAnimationState,'disconnecting');pet.finishRun(pet.runKey);assert.equal(pet.playing,false);
+pet.state='connecting';pet.changed();pet.state='attention';pet.changed();
+assert.equal(pet.queuedState,'');assert.equal(pet.playing,false,'an error interrupts immediately');
+const preview=readFileSync(resolve(etsRoot,'pages/SkinPreview.ets'),'utf8');
+assert.match(preview,/Button\('演示断开'\)[\s\S]*?demonstrate\('disconnecting'\)/,
+  'the emulator preview must exercise the flag-stow sequence rather than jump to idle');
+console.log('PASS walking cycles to success, flag planting and stowing finish before sleep, errors interrupt immediately');

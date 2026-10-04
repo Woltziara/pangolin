@@ -14,10 +14,18 @@ export function pangolinFrames(state: string, reduced: boolean = false): Pangoli
   if (reduced) { return []; }
   if (state === 'connecting') {
     return [new PangolinFrame('rest', 100), new PangolinFrame('wake', 260),
-      new PangolinFrame('walk_a', 150), new PangolinFrame('walk_b', 150),
-      new PangolinFrame('walk_a', 150), new PangolinFrame('walk_b', 150), new PangolinFrame('wait', 180)];
+      new PangolinFrame('walk_01', 90), new PangolinFrame('walk_02', 90)];
   }
-  if (state === 'connected') { return [new PangolinFrame('plant', 280), new PangolinFrame('ready', 240)]; }
+  if (state === 'walking') {
+    return [new PangolinFrame('walk_01', 90), new PangolinFrame('walk_02', 90),
+      new PangolinFrame('walk_03', 90), new PangolinFrame('walk_04', 90),
+      new PangolinFrame('walk_05', 90), new PangolinFrame('walk_06', 90),
+      new PangolinFrame('walk_07', 90), new PangolinFrame('walk_08', 90)];
+  }
+  if (state === 'connected') { return [new PangolinFrame('wait', 90), new PangolinFrame('unplant', 210),
+    new PangolinFrame('plant', 280), new PangolinFrame('ready', 260)]; }
+  if (state === 'disconnecting') { return [new PangolinFrame('ready', 90), new PangolinFrame('plant', 190),
+    new PangolinFrame('unplant', 230), new PangolinFrame('stow', 300), new PangolinFrame('rest', 350)]; }
   // Errors immediately use the concerned animal-paw pose, never a smiling intermediary.
   if (state === 'attention') { return []; }
   if (state === 'welcome') { return [new PangolinFrame('wake', 300), new PangolinFrame('wait', 260)]; }

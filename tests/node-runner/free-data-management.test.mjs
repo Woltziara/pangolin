@@ -1,3 +1,4 @@
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
@@ -19,18 +20,18 @@ const deps={
  './NodeStore':{NodeStore:{loadNodes(){return [node];},displayName(n){return n.name;},saveNodes(){files.set('nodes.json','{"v":2,"nodes":[]}');}}},
  './SubscriptionStore':{SubscriptionStore:{save(){files.set('subscriptions.json','[]');}}},
  './UserRuleStore':{USER_RULES_FILE:'user-rules.json'},
- './StatusStore':{OUTBOUND_FILE:'outbound.json',StatusStore:{readStatus(){return {vpnCreated:active};},readJsonFile(_ctx,n){return files.get(n)||'';},
-  writeText(_ctx,n,v){files.set(n,v);},listNames(){return [...files.keys()];},destExists(p){return files.has(p.split('/').at(-1));},removeFile(_ctx,n){if(n===failFile)throw Error('fixture-denied');files.delete(n);}}}
+ './StatusStore':{OUTBOUND_FILE:'outbound.json',StatusStore:{acquireUserDataLease:()=>1,releaseUserDataLease(){},readStrictText:(_c,k)=>files.get(k)||'',readOwnerStatus:()=>({phase:'IDLE',at:0,generation:'',ownerInstance:''}),readStatus(){return {vpnCreated:active};},readJsonFile(_ctx,n){return files.get(n)||'';},
+  writeText(_ctx,n,v){files.set(n,v);},listNamesStrict(){return [...files.keys()];},destExists(p){return files.has(p.split('/').at(-1));},removeFile(_ctx,n){if(n===failFile)throw Error('fixture-denied');files.delete(n);}}}
 };
 const module={exports:{}};vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,
- {module,exports:module.exports,Date,console:{error(){}},require(n){if(!(n in deps))throw Error(n);return deps[n];}});
+ {module,exports:module.exports,Date,console:{error(){}},require(n){if(!(n in deps)){const b=legacyBoundary(n);if(b!==undefined)return b;throw Error(n);}return deps[n];}});
 const D=module.exports.DataManagement,ctx={filesDir:'/fixture'};
 reset();const path=D.exportConfig(ctx),raw=files.get(path.split('/').at(-1)),doc=JSON.parse(raw),parsed=parseSubscriptionContent(raw);
 assert.equal(parsed.nodes.length,1);assert.equal(parsed.nodes[0].name,node.name);assert.equal(JSON.parse(parsed.nodes[0].outboundJson).streamSettings.tlsSettings.allowInsecure,true);
 assert(doc.nodes&&doc.subscriptions&&doc.userRules&&doc.settings);
 active=true;const count=files.size;await assert.rejects(D.wipeAll(ctx),/断开/);assert.equal(files.size,count);active=false;
 reset();await D.clearNodesAndSubscriptions(ctx);assert(deletedKey);assert(!files.has('outbound.json.huks'));assert(!files.has('node-meta.json'));assert(files.has('settings.json'));assert(files.has('user-rules.json'));
-reset();await D.wipeAll(ctx);assert.deepEqual([...files.keys()],['geoip.dat']);assert(deletedKey);
+reset();await D.wipeAll(ctx);assert.deepEqual([...files.keys()].filter(k=>k!=='connection-control.json'),['geoip.dat']);assert.equal(JSON.parse(files.get('connection-control.json')).state,'confirmed');assert(deletedKey);
 reset();files.set('ui-feedback.json','diagnostic');failFile='ui-feedback.json';const result=D.clearLogs(ctx);assert.equal(result.failed,1);assert.equal(result.removed,0);
 reset();for(const n of ['runtime-journal.jsonl','runtime-journal.1.jsonl','incident-report-1800000000000.json','diagnostic-report-1800000000001.json','native-stats.json'])files.set(n,'diagnostic');
 files.set('incident-report-personal.json','unrelated');const logs=D.clearLogs(ctx);assert.equal(logs.removed,5);assert(files.has('incident-report-personal.json'));assert(files.has('nodes.json'));

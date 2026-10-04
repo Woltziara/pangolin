@@ -167,7 +167,7 @@ export struct NodeDetail {
               .width('100%')
               .margin({ top: 20 })
           } else if (this.node !== null) {
-            Text('以下展示导入的原始参数。本版实际连接默认校验证书，不会自动采用“跳过校验”。')
+            Text('以下是导入的节点参数。连接时会校验证书；不匹配请检查节点配置。')
               .fontSize(13).fontColor($r('sys.color.ohos_id_color_text_secondary')).width('100%')
             Column({ space: 6 }) {
               Text(NodeStore.displayName(this.node))

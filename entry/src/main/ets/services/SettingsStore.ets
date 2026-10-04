@@ -36,8 +36,8 @@ export class AppSettings {
   // Independent role selections. Empty means automatic; legacy manual mode initially pins both.
   chatgptNodeId: string = '';
   generalNodeId: string = '';
-  // 节点失败时是否自动切换备用节点（默认开）。
-  failoverEnabled: boolean = true;
+  // 节点失败时是否自动切换备用节点（新安装默认关闭；已有明确选择保留）。
+  failoverEnabled: boolean = false;
   // 备用节点限定分组；'' = 任意分组。
   failoverGroup: string = '';
   // 最近一次成功连接使用的节点 id（分流时记美国侧节点），供固定模式预选。
@@ -59,6 +59,8 @@ export class SettingsStore {
     }
     try {
       const parsed = JSON.parse(raw) as Record<string, Object>;
+      if (parsed === null || Array.isArray(parsed) || typeof parsed !== 'object' ||
+        (parsed['v'] !== undefined && parsed['v'] !== SETTINGS_SCHEMA_VERSION)) throw new Error('unsupported settings schema');
       settings.routeMode = normalizeRouteMode(parsed['routeMode']);
       settings.selectionMode = normalizeSelectionMode(parsed['selectionMode']);
       settings.manualNodeId = asString(parsed['manualNodeId'], '');
@@ -68,7 +70,7 @@ export class SettingsStore {
       const legacyPin = settings.selectionMode === SELECT_MANUAL ? settings.manualNodeId : '';
       settings.chatgptNodeId = typeof parsed['chatgptNodeId'] === 'string' ? parsed['chatgptNodeId'] as string : legacyPin;
       settings.generalNodeId = typeof parsed['generalNodeId'] === 'string' ? parsed['generalNodeId'] as string : legacyPin;
-      settings.failoverEnabled = asBool(parsed['failoverEnabled'], true);
+      settings.failoverEnabled = asBool(parsed['failoverEnabled'], false);
       settings.failoverGroup = asString(parsed['failoverGroup'], '');
       settings.lastGoodNodeId = asString(parsed['lastGoodNodeId'], '');
       settings.autoConnectOnLaunch = asBool(parsed['autoConnectOnLaunch'], false);
@@ -76,8 +78,7 @@ export class SettingsStore {
       settings.eventKeepCount = asEventKeep(parsed['eventKeepCount']);
       return settings;
     } catch (error) {
-      console.error(`SettingsStore.load parse failed ${JSON.stringify(error)}`);
-      return new AppSettings();
+      throw new Error('设置无法读取，未恢复默认或覆盖原设置。');
     }
   }
 

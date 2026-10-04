@@ -34,16 +34,16 @@ export class AppliedPolicy {
     StatusStore.writeText(context, RUNNING_DIGEST_FILE, JSON.stringify(rec));
   }
 
-  static record(context: common.Context, payload: string, generation: string): void {
+  static record(context: common.Context, payload: string, generation: string, intent: Record<string, Object> | null = null): void {
     const source = JSON.parse(payload) as Record<string, Object>;
     const settings = SettingsStore.load(context);
     const record: Record<string, Object> = {};
     record['generation'] = generation;
     record['at'] = Date.now();
     record['routeMode'] = source['routeMode'] ?? 'rule';
-    record['intendedChatgptNodeId'] = settings.chatgptNodeId;
-    record['intendedGeneralNodeId'] = settings.generalNodeId;
-    record['intendedSingleNodeId'] = settings.singleNodeId;
+    record['intendedChatgptNodeId'] = intent !== null ? intent['chatgptNodeId'] : settings.chatgptNodeId;
+    record['intendedGeneralNodeId'] = intent !== null ? intent['generalNodeId'] : settings.generalNodeId;
+    record['intendedSingleNodeId'] = intent !== null ? intent['singleNodeId'] : settings.singleNodeId;
     record['chatgptNodeId'] = source['usNodeId'] ?? source['chatgptNodeId'] ?? '';
     record['generalNodeId'] = source['ytNodeId'] ?? source['generalNodeId'] ?? '';
     record['channelMode'] = source['channelMode'] ?? 'dual';
@@ -70,6 +70,27 @@ export class AppliedPolicy {
       if (liveDigest !== receipt['payloadDigest']) { return null; }
       return receipt;
     } catch (error) { return null; }
+  }
+
+  /** Compare saved selection intent even when its old VPN owner is gone.
+   * This does not attest that the saved route is currently running. */
+  static savedSelectionChanged(context: common.Context): boolean {
+    try {
+      const raw = StatusStore.readJsonFile(context, FILE);
+      if (raw.length < 2) return false;
+      const receipt = JSON.parse(raw) as Record<string, Object>;
+      if (typeof receipt['generation'] !== 'string' || (receipt['generation'] as string).length === 0 ||
+        typeof receipt['payloadDigest'] !== 'string' || (receipt['payloadDigest'] as string).length < 4) return false;
+      const settings = SettingsStore.load(context);
+      const mode = CONNECTION_POLICY.mode(context);
+      if (receipt['channelMode'] !== 'single' && receipt['channelMode'] !== 'dual') return false;
+      if (receipt['channelMode'] !== mode) return true;
+      if (mode === 'single') {
+        return typeof receipt['intendedSingleNodeId'] === 'string' && receipt['intendedSingleNodeId'] !== settings.singleNodeId;
+      }
+      return typeof receipt['intendedChatgptNodeId'] === 'string' && typeof receipt['intendedGeneralNodeId'] === 'string' &&
+        (receipt['intendedChatgptNodeId'] !== settings.chatgptNodeId || receipt['intendedGeneralNodeId'] !== settings.generalNodeId);
+    } catch (_error) { return false; }
   }
 
   static matches(context: common.Context): boolean {

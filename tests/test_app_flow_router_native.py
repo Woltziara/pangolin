@@ -25,16 +25,10 @@ class AppFlowRouterNativeTest(unittest.TestCase):
                 str(ROOT / "tests/app_flow_router_native_test.cpp"),
                 "-o", str(executable),
             ], check=True)
-            # 128 simultaneous requests use two descriptors each, in addition to
-            # stdin/stdout/stderr. macOS shells may default to a soft limit of 256.
-            def allow_capacity_test() -> None:
+            def allow_capacity():
                 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-                target = max(soft, 512)
-                if hard != resource.RLIM_INFINITY:
-                    target = min(target, hard)
-                resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
-            subprocess.run([str(executable)], check=True, timeout=10,
-                           preexec_fn=allow_capacity_test)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (min(max(soft, 512), hard), hard))
+            subprocess.run([str(executable)], check=True, timeout=10, preexec_fn=allow_capacity)
 
 
 if __name__ == "__main__":

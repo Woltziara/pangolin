@@ -1,9 +1,10 @@
+import { deadline } from './AsyncDeadline';
 import { common } from '@kit.AbilityKit';
-import { http } from '@kit.NetworkKit';
-import { socket } from '@kit.NetworkKit';
+import { http, socket } from '@kit.NetworkKit';
+import { util } from '@kit.ArkTS';
 import process from '@ohos.process';
-import { DataplaneStatus, PHASE_CANARY_OK, PHASE_CORE_RUNNING, PHASE_DEGRADED_UNPROVEN,
-  PHASE_FORWARDER_RUNNING, PHASE_STARTING, PHASE_UNPROVEN, PHASE_VPN_CREATED } from '../net/DataplaneStatus';
+import { DataplaneStatus } from '../net/DataplaneStatus';
+import { probeIdentity, receiptSucceeded, probeSummary } from '../net/ProbeResult';
 import { BUNDLE_NAME } from '../vpn/VpnConstants';
 import { StatusStore } from './StatusStore';
 
@@ -14,208 +15,209 @@ const DNS_HOSTS: string[] = ['1.1.1.1', '8.8.8.8'];
 const DNS_PORT: number = 53;
 const DNS_QUESTION: string = 'www.google.com';
 const BACKOFF_MAX_MS: number = 120000;
+const FAILURE_RECHECK_MS: number = 15000;
 
+class ProbeWork {
+  valid: boolean = true;
+  cancelActions: Array<() => void> = [];
+  cancel(): void {
+    this.valid = false;
+    this.cancelActions.forEach((action: () => void) => { try { action(); } catch (_error) {} });
+    this.cancelActions = [];
+  }
+  add(action: () => void): void { if (this.valid) this.cancelActions.push(action); else action(); }
+  remove(action: () => void): void { this.cancelActions = this.cancelActions.filter((item) => item !== action); }
+}
+class HttpObservation {
+  code: number = 0; errorCode: number = 0; stage: string = 'not-tested';
+}
 export class ProbeSelfCheck {
-  private inflight: boolean = false;
+  private work: ProbeWork = new ProbeWork();
+  private inflightWork: ProbeWork | null = null;
+  private flight: Promise<void> | null = null;
+  private batchId: string = '';
   private lastOkRid: string = '';
   private observedGeneration: string = '';
   private lastOkAt: number = 0;
   private loopId: number = -1;
   private failCount: number = 0;
   private nextRetryAt: number = 0;
+  private foreground: boolean = true;
+  private returnedAt: number = 0;
 
+  setForeground(value: boolean): void {
+    this.foreground = value;
+    if (value) { this.returnedAt = Date.now(); this.lastOkAt = 0; this.nextRetryAt = 0; }
+  }
+  lastReturnAt(): number { return this.returnedAt; }
   startLoop(context: common.UIAbilityContext): void {
-    if (this.loopId >= 0) {
-      return;
-    }
-    this.loopId = setInterval(() => {
-      this.tick(context).catch((error: Object) => {
-        this.writeLoopError(context, error);
-      });
-    }, LOOP_MS);
-    this.tick(context).catch((error: Object) => {
-      this.writeLoopError(context, error);
-    });
+    if (this.loopId >= 0) return;
+    this.work = new ProbeWork(); this.observedGeneration = '';
+    this.loopId = setInterval(() => { this.tick(context).catch(() => {}); }, LOOP_MS);
+    this.tick(context).catch(() => {});
   }
-
   stopLoop(): void {
-    if (this.loopId >= 0) {
-      clearInterval(this.loopId);
-      this.loopId = -1;
-    }
+    this.work.cancel(); this.inflightWork = null; this.flight = null;
+    if (this.loopId >= 0) { clearInterval(this.loopId); this.loopId = -1; }
   }
-
-  async tick(context: common.UIAbilityContext): Promise<void> {
-    if (this.inflight) {
-      return;
-    }
+  async tick(context: common.UIAbilityContext, force: boolean = false): Promise<void> {
+    if (this.loopId < 0 || !this.work.valid) return;
     const status = StatusStore.readStatus(context);
-    if (status.generation !== this.observedGeneration) {
-      this.observedGeneration = status.generation;
-      this.lastOkRid = '';
-      this.lastOkAt = 0;
-      this.failCount = 0;
-      this.nextRetryAt = 0;
+    const identity = probeIdentity(status);
+    if (identity !== this.observedGeneration) {
+      this.work.cancel(); this.work = new ProbeWork(); this.inflightWork = null; this.flight = null;
+      this.observedGeneration = identity; this.lastOkRid = ''; this.lastOkAt = 0; this.failCount = 0; this.nextRetryAt = 0;
     }
-    if (Date.now() < this.nextRetryAt) {
-      return;
-    }
-    if (!this.isLive(status) || !status.probePending || status.evidenceRid.length < 2) {
-      return;
-    }
-    const sinceOk = Date.now() - this.lastOkAt;
-    if (this.lastOkRid.length > 0 && sinceOk >= 0 && sinceOk < SUCCESS_RECHECK_MS) {
-      return;
-    }
-    if (status.probeGoogleUrl.length < 8 || status.probeDirectUrl.length < 8) {
-      return;
-    }
-    this.inflight = true;
+    if (this.flight !== null) { if (force) await this.flight; return; }
+    if (this.inflightWork !== null || (!force && Date.now() < this.nextRetryAt)) return;
+    if (!this.isLive(status)) return;
+    const cadence = this.foreground ? SUCCESS_RECHECK_MS : 120000;
+    if (!force && this.lastOkAt > 0 && Date.now() >= this.lastOkAt && Date.now() - this.lastOkAt < cadence) return;
+    const work = this.work; this.inflightWork = work; this.batchId = util.generateRandomUUID();
+    const flight = this.perform(context, status, work);
+    this.flight = flight;
+    try { await flight; } finally { if (this.flight === flight) this.flight = null; if (this.inflightWork === work) this.inflightWork = null; }
+  }
+  private async perform(context: common.UIAbilityContext, status: DataplaneStatus, work: ProbeWork): Promise<void> {
     try {
-      const ok = await this.runFetch(context, status);
-      if (ok) {
-        this.lastOkRid = status.evidenceRid;
-        this.lastOkAt = Date.now();
-        this.failCount = 0;
-        this.nextRetryAt = 0;
-      } else {
-        this.lastOkRid = '';
-        this.failCount += 1;
-        let wait = 2000;
-        for (let i = 1; i < this.failCount && wait < BACKOFF_MAX_MS; i++) {
-          wait = wait * 2;
-        }
-        if (wait > BACKOFF_MAX_MS) {
-          wait = BACKOFF_MAX_MS;
-        }
-        this.nextRetryAt = Date.now() + wait;
-      }
-    } catch (error) {
-      this.lastOkRid = '';
-      this.writeFetch(context, status, 0, 0, false, false, `${error}`);
-      this.failCount += 1;
-      this.nextRetryAt = Date.now() + 4000;
-    } finally {
-      this.inflight = false;
+      const ok = await this.runFetch(context, status, work);
+      if (!this.current(context, status, work)) return;
+      if (ok) { this.lastOkRid = probeIdentity(status); this.lastOkAt = Date.now(); this.failCount = 0; this.nextRetryAt = 0; }
+      else { this.lastOkRid = ''; this.failCount += 1;
+        this.nextRetryAt = Date.now() + Math.min(BACKOFF_MAX_MS, FAILURE_RECHECK_MS * Math.pow(2, Math.min(4, this.failCount - 1))); }
+    } catch (_error) {
+      if (this.current(context, status, work)) { this.lastOkRid = ''; this.nextRetryAt = Date.now() + FAILURE_RECHECK_MS; }
     }
   }
-
-  /**
-   * Phase D 诊断页复用入口：对既有 DNS 探针（1.1.1.1/8.8.8.8 查询 www.google.com）
-   * 做一次按需检查。与后台循环共用同一份手写 DNS 实现，不复制逻辑。
-   */
-  async probeDnsOk(question: string = DNS_QUESTION): Promise<boolean> {
-    for (let i = 0; i < DNS_HOSTS.length; i++) {
-      if (await this.udpDns(DNS_HOSTS[i], DNS_PORT, question)) {
-        return true;
+  private current(context: common.UIAbilityContext, status: DataplaneStatus, work: ProbeWork): boolean {
+    if (!work.valid || this.work !== work || this.loopId < 0) return false;
+    const live = StatusStore.readStatus(context);
+    return this.isLive(live) && probeIdentity(live) === probeIdentity(status);
+  }
+  async checkNow(context: common.UIAbilityContext): Promise<string> {
+    const before = StatusStore.readStatus(context);
+    if (!this.isLive(before)) return before.networkState === 'unavailable' ? '手机网络当前不可用，请恢复网络后检测。' : '当前没有可检测的运行隧道，请先连接。';
+    if (this.loopId < 0) this.startLoop(context);
+    const identity = probeIdentity(before);
+    const run = this.tick(context, true);
+    const batchId = this.batchId; const ownedWork = this.work;
+    try { await deadline(run, 18000, '网络检测超时'); }
+    catch (_error) {
+      ownedWork.cancel();
+      if (this.work === ownedWork && this.batchId === batchId) {
+        this.work = new ProbeWork(); this.inflightWork = null; this.flight = null;
       }
+      return '检测超时，已取消本次请求；未改变线路。';
+    }
+    const after = StatusStore.readStatus(context);
+    if (probeIdentity(after) !== identity || !this.isLive(after)) return '检测期间网络或连接发生变化，旧结果已丢弃。';
+    const raw = StatusStore.readText(context, 'probe-fetch.json');
+    try { if (batchId.length === 0 || (JSON.parse(raw) as Record<string, Object>)['rid'] !== batchId) return '本次检测未取得回执，旧结果未被当成本次成功。'; }
+    catch (_error) { return '本次检测结果无法读取，未改变线路。'; }
+    return probeSummary(raw, after, Date.now()) || '本次未取得当前网络的完整结果，请重试。';
+  }
+  private isLive(status: DataplaneStatus): boolean {
+    return status.desiredRunning && status.vpnCreated && status.tunFdValid && status.xrayRunning && status.forwarderOk &&
+      !status.cleanupPending && !status.nativePoisoned && status.networkState !== 'unavailable' &&
+      ['STOPPED','IDLE','ERROR','POISONED','RECONNECTING','STOP_UNCONFIRMED'].indexOf(status.phase) < 0 &&
+      status.at > 0 && Date.now() >= status.at && Date.now() - status.at <= 25000;
+  }
+  private async runFetch(context: common.UIAbilityContext, status: DataplaneStatus, work: ProbeWork): Promise<boolean> {
+    const rid = this.batchId; const startedAt = Date.now();
+    const empty = Promise.resolve(new HttpObservation());
+    const googleWork = status.routeMode === 'direct' ? empty : this.httpObserve(`https://www.google.com/generate_204?rid=${rid}`, false, work);
+    const cloudWork = status.routeMode === 'direct' ? empty : this.httpObserve(`https://cp.cloudflare.com/generate_204?rid=${rid}`, false, work);
+    const directWork = this.httpObserve(`https://www.baidu.com/robots.txt?rid=${rid}`, false, work);
+    const dnsWork = this.probeDnsOk(DNS_QUESTION, work);
+    const google = await googleWork, cloud = await cloudWork, direct = await directWork,
+      dnsOk = await dnsWork;
+    if (!this.current(context, status, work)) return false;
+    const rec: Record<string, Object> = {
+      'schema': 2, 'rid': rid, 'generation': status.generation, 'revision': status.sessionRevision,
+      'ownerInstance': status.ownerInstance, 'networkEpoch': status.networkEpoch, 'policyDigest': status.payloadDigest,
+      'scope': 'pangolin-ui-path', 'observedRoute': 'not-observed', 'routeMode': status.routeMode,
+      'channelMode': status.channelMode, 'googleHttp': google.code, 'cloudflareHttp': cloud.code,
+      'directHttp': direct.code,
+      'dnsOk': dnsOk, 'dnsScope': 'raw-udp-application-path',
+      'googleStage': google.stage, 'cloudflareStage': cloud.stage, 'domesticStage': direct.stage,
+      'googleErrorCode': google.errorCode, 'cloudflareErrorCode': cloud.errorCode, 'domesticErrorCode': direct.errorCode,
+      'pid': process.pid.toString(), 'uid': process.uid.toString(), 'bundle': BUNDLE_NAME,
+      'source': 'entry-foreground', 'startedAt': startedAt, 'at': Date.now()
+    };
+    const stages: string[] = [];
+    if (google.stage !== 'not-tested' && google.stage !== 'http') stages.push(`google:${google.stage}`);
+    if (cloud.stage !== 'not-tested' && cloud.stage !== 'http') stages.push(`cloudflare:${cloud.stage}`);
+    if (direct.stage !== 'http') stages.push(`domestic:${direct.stage}`);
+    if (!dnsOk) stages.push('raw-dns:no-valid-answer');
+    rec['failureStages'] = stages.join('; ');
+    const ok = receiptSucceeded(rec, status.routeMode, status.channelMode === 'dual');
+    rec['ackOk'] = ok; rec['failAck'] = !ok; rec['evidence'] = 'scoped-https-v2';
+    StatusStore.writeText(context, 'probe-fetch.json', JSON.stringify(rec));
+    return ok;
+  }
+  async probeDnsOk(question: string = DNS_QUESTION, work: ProbeWork | null = null): Promise<boolean> {
+    for (let i = 0; i < DNS_HOSTS.length; i++) {
+      if (work !== null && !work.valid) return false;
+      if (await this.udpDns(DNS_HOSTS[i], DNS_PORT, question, work)) return true;
     }
     return false;
   }
-
-  /**
-   * Phase D 诊断页复用入口：对给定 URL 做一次 HTTP GET 并返回状态码（0 = 失败）。
-   * 与后台自证循环共用同一个 httpCode 实现与超时预算。
-   */
-  async probeHttpCode(url: string): Promise<number> {
-    return this.httpCode(url);
+  async probeHttpCode(url: string): Promise<number> { return this.httpCode(url); }
+  private async httpCode(url: string, work: ProbeWork | null = null): Promise<number> {
+    return (await this.httpObserve(url, false, work)).code;
   }
-
-  private isLive(status: DataplaneStatus): boolean {
-    return status.phase === PHASE_FORWARDER_RUNNING || status.phase === PHASE_CANARY_OK ||
-      status.phase === PHASE_UNPROVEN || status.phase === PHASE_DEGRADED_UNPROVEN ||
-      status.phase === PHASE_CORE_RUNNING || status.phase === PHASE_VPN_CREATED ||
-      status.phase === PHASE_STARTING;
-  }
-
-  private async runFetch(context: common.UIAbilityContext, status: DataplaneStatus): Promise<boolean> {
-    const googleWork = this.httpCode(status.probeGoogleUrl);
-    const directWork = this.httpCode(status.probeDirectUrl);
-    const dnsWork = this.probeDnsOk();
-    const googleHttp = await googleWork;
-    const directHttp = await directWork;
-    const dnsOk = await dnsWork;
-    const ackOk = googleHttp === 204 && directHttp >= 200 && directHttp < 400 && dnsOk;
-    this.writeFetch(context, status, googleHttp, directHttp, dnsOk, ackOk, ackOk ? '' : 'fail-ack');
-    return ackOk;
-  }
-
-  private writeFetch(context: common.UIAbilityContext, status: DataplaneStatus, googleHttp: number,
-    directHttp: number, dnsOk: boolean, ackOk: boolean, error: string): void {
-    const rec: Record<string, Object> = {};
-    rec['rid'] = status.evidenceRid;
-    rec['generation'] = status.generation;
-    rec['revision'] = status.sessionRevision;
-    rec['googleHttp'] = googleHttp;
-    rec['directHttp'] = directHttp;
-    rec['dnsOk'] = dnsOk;
-    rec['ackOk'] = ackOk;
-    rec['failAck'] = !ackOk;
-    rec['pid'] = process.pid.toString();
-    rec['uid'] = process.uid.toString();
-    rec['bundle'] = BUNDLE_NAME;
-    rec['source'] = 'entry-background';
-    rec['evidence'] = 'http-204+dns';
-    rec['error'] = error;
-    rec['at'] = Date.now();
-    rec['failCount'] = this.failCount;
-    rec['nextRetryAt'] = this.nextRetryAt;
-    StatusStore.writeText(context, 'probe-fetch.json', JSON.stringify(rec));
-  }
-
-  private writeLoopError(context: common.UIAbilityContext, error: Object): void {
-    const rec: Record<string, Object> = {};
-    rec['error'] = `${error}`;
-    rec['at'] = Date.now();
-    rec['source'] = 'entry-background';
-    StatusStore.writeText(context, 'probe-loop-error.json', JSON.stringify(rec));
-  }
-
-  private async httpCode(url: string): Promise<number> {
-    const client = http.createHttp();
+  private async httpObserve(url: string, head: boolean, work: ProbeWork | null = null): Promise<HttpObservation> {
+    const result = new HttpObservation();
+    if (work !== null && !work.valid) { result.stage = 'cancelled'; return result; }
+    const client = http.createHttp(); let cancel: () => void = (): void => {};
     try {
-      const code = await new Promise<number>((resolve: (value: number) => void) => {
-        const timer = setTimeout(() => {
-          resolve(0);
-        }, FETCH_TIMEOUT_MS + 1000);
-        client.request(url, {
-          method: http.RequestMethod.GET,
-          usingCache: false,
-          connectTimeout: FETCH_TIMEOUT_MS,
-          readTimeout: FETCH_TIMEOUT_MS,
-          expectDataType: http.HttpDataType.STRING,
-          header: { 'User-Agent': 'tongdao-self-probe' }
+      return await new Promise<HttpObservation>((resolve: (value: HttpObservation) => void) => {
+        let done = false;
+        const finish = (): void => { if (!done) { done = true; clearTimeout(timer); resolve(result); } };
+        const timer = setTimeout(() => { result.stage = 'timeout'; try { client.destroy(); } catch (_error) {} finally { finish(); } }, FETCH_TIMEOUT_MS + 500);
+        cancel = (): void => { result.stage = 'cancelled'; try { client.destroy(); } catch (_error) {} finally { finish(); } };
+        work?.add(cancel); if (work !== null && !work.valid) return;
+        client.request(url, { method: head ? http.RequestMethod.HEAD : http.RequestMethod.GET,
+          usingCache: false, maxRedirects: 0, connectTimeout: FETCH_TIMEOUT_MS, readTimeout: FETCH_TIMEOUT_MS,
+          expectDataType: http.HttpDataType.STRING, header: { 'User-Agent': 'Pangolin-network-check' }
         }).then((resp: http.HttpResponse) => {
-          clearTimeout(timer);
-          resolve(resp.responseCode);
-        }).catch(() => {
-          clearTimeout(timer);
-          resolve(0);
+          if (done) return; result.code = resp.responseCode; result.stage = 'http'; finish();
+        }).catch((error: Object) => {
+          if (done) return;
+          const code = (error as Record<string, Object>)['code'];
+          result.errorCode = typeof code === 'number' && Number.isFinite(code) ? code : 0;
+          result.stage = code === 2300006 ? 'dns' : code === 2300007 ? 'connect' : code === 2300028 ? 'timeout' :
+            code === 2300035 || code === 2300060 ? 'tls' : 'transport-unknown';
+          finish();
         });
       });
-      return code;
-    } catch (error) {
-      return 0;
-    } finally {
-      try {
-        client.destroy();
-      } catch (error) {
-        // ignore
-      }
-    }
+    } catch (_error) { result.stage = 'transport-unknown'; return result; }
+    finally { work?.remove(cancel); try { client.destroy(); } catch (_error) {} }
   }
-
-  private async udpDns(host: string, port: number, question: string): Promise<boolean> {
+  private async udpDns(host: string, port: number, question: string, work: ProbeWork | null = null): Promise<boolean> {
+    if (work !== null && !work.valid) { return false; }
+    let cancel: () => void = () => {};
     const udp = socket.constructUDPSocketInstance();
     const txid = Math.floor(Math.random() * 65535);
     try {
-      await udp.bind({ address: '0.0.0.0', port: 0, family: 1 });
+      let cancelBind: () => void = () => {};
+      const cancelledBind = new Promise<void>((_resolve, reject) => {
+        cancelBind = (): void => { reject(new Error('probe-cancelled')); };
+        work?.add(cancelBind);
+      });
+      try {
+        await deadline(Promise.race([udp.bind({ address: '0.0.0.0', port: 0, family: 1 }), cancelledBind]),
+          3000, 'probe-bind-timeout');
+      } finally { work?.remove(cancelBind); }
+      if (work !== null && !work.valid) { return false; }
       const payload = this.buildDnsQuery(question, txid);
       let ok = false;
       await new Promise<void>((resolve: () => void) => {
         const timer = setTimeout(() => {
           resolve();
         }, 3000);
+        cancel = (): void => { clearTimeout(timer); try { udp.close(); } finally { resolve(); } };
+        work?.add(cancel);
         udp.on('message', (value: socket.SocketMessageInfo) => {
           const remote = value.remoteInfo;
           const addr = remote.address;
@@ -223,9 +225,9 @@ export class ProbeSelfCheck {
           const msg = new Uint8Array(value.message);
           if (this.validateDnsResponse(msg, txid, question, addr, rport, host, port)) {
             ok = true;
+            clearTimeout(timer);
+            resolve();
           }
-          clearTimeout(timer);
-          resolve();
         });
         udp.send({
           data: payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength),
@@ -239,6 +241,7 @@ export class ProbeSelfCheck {
     } catch (error) {
       return false;
     } finally {
+      work?.remove(cancel);
       try {
         udp.close();
       } catch (error) {
@@ -408,11 +411,5 @@ export class ProbeSelfCheck {
     return rec;
   }
 }
-
-class DnsName {
-  ok: boolean = false;
-  name: string = '';
-  next: number = 0;
-}
-
+class DnsName { ok: boolean = false; name: string = ''; next: number = 0; }
 export const PROBE_SELF_CHECK: ProbeSelfCheck = new ProbeSelfCheck();

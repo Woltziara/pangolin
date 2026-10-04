@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import {makeLoader} from './helpers/ets-loader.mjs';
+const {parseTrafficSample,trafficPoint,trafficWindow,trafficPath}=makeLoader()('core/TrafficPresentation.ets');
+const now=100000;
+const raw=(at,up,down,owner='A')=>JSON.stringify({schema:1,generation:'g',ownerInstance:owner,revision:1,at,uploadBytes:up,downloadBytes:down});
+const a=parseTrafficSample(raw(now-2000,100,200),'g','A',1,now);
+const b=parseTrafficSample(raw(now,2148,6344),'g','A',1,now);
+assert(a&&b);const point=trafficPoint(a,b);
+assert(point);assert.equal(point.uploadRate,1024);assert.equal(point.downloadRate,3072);
+assert.equal(parseTrafficSample(raw(now,2148,6344,'other'),'g','A',1,now),null);
+assert.equal(parseTrafficSample(raw(now-10000,2148,6344),'g','A',1,now),null);
+assert.equal(trafficPoint(b,a),null);
+assert.equal(trafficPoint(a,parseTrafficSample(raw(now,50,100),'g','A',1,now)),null);
+assert.equal(trafficWindow([{...point,at:now-61000},point],now).length,1);
+const path=trafficPath([point],false,300,80,now);
+assert.match(path,/^M /);assert(!path.includes('NaN'));
+assert.equal(trafficPath([],false,300,80,now),'M 0 77 L 300 77');
+console.log('PASS owner-scoped fresh traffic samples, sane rates and bounded chart path');

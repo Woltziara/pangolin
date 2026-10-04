@@ -1,3 +1,6 @@
+import { BuildIdentity } from './BuildIdentity';
+import { SystemExitEvidence } from './SystemExitEvidence';
+import { LAYERS_FILE, BUSINESS_FILE, safeLayerRecord, businessObservation } from '../net/LayerEvidence';
 import { redactDiagnosticText } from '../core/UserFacingCopy';
 import { UI_FEEDBACK_FILE } from './UiFeedback';
 // 穿山 (GPL-3.0) — 诊断报告构建（Phase D 新增）。
@@ -10,7 +13,7 @@ import { StatusStore } from './StatusStore';
 import { RuntimeJournal } from './RuntimeJournal';
 import { serializeStatus } from '../net/DataplaneStatus';
 
-export const FALLBACK_APP_VERSION: string = '0.3.47';
+export const FALLBACK_APP_VERSION: string = 'unknown-version';
 export const REPORT_PREFIX: string = 'diagnostic-report-';
 export const REPORT_EVENT_LIMIT: number = 50;
 export const INCIDENT_PREFIX: string = 'incident-report-';
@@ -86,6 +89,8 @@ export class DiagnosticReport {
     doc['v'] = 2;
     doc['time'] = Date.now();
     doc['appVersion'] = await DiagnosticReport.appVersion();
+    doc['buildSourceIdentity'] = BuildIdentity.source(context);
+    doc['ownerBuildMatchesPackage'] = status.buildSourceIdentity === BuildIdentity.source(context) && status.buildSourceIdentity.length > 0;
     doc['sanitized'] = true;
     doc['status'] = DiagnosticReport.scrub(statusDoc);
     doc['checks'] = DiagnosticReport.scrub(checkDocs);
@@ -104,6 +109,10 @@ export class DiagnosticReport {
     };
     doc['snapshotFreshness'] = freshness;
     doc['runtimeJournal'] = RuntimeJournal.read(context);
+    doc['systemExitEvents'] = SystemExitEvidence.read(context);
+    doc['layerEvidence'] = safeLayerRecord(StatusStore.readText(context, LAYERS_FILE));
+    doc['targetBusiness'] = businessObservation(StatusStore.readText(context, BUSINESS_FILE), status.generation,
+      status.sessionRevision, Date.now());
     const applied = DiagnosticReport.readObject(context, 'applied-policy.json');
     const policy: Record<string, Object> = {};
     const modes = ['single', 'dual', 'rule', 'global', 'direct'];
