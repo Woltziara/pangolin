@@ -1,0 +1,14 @@
+proxies:
+  - name: "香港 Clash SS"
+    type: ss
+    server: hk2.example.com
+    port: 8388
+    cipher: aes-128-gcm
+    password: fake-clash-ss-pass
+  - name: 美国 Clash Trojan
+    type: trojan
+    server: us2.example.com
+    port: 443
+    password: fake-clash-trojan-pass
+    sni: us2.example.com
+    skip-cert-verify: false

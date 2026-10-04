@@ -1,0 +1,45 @@
+diff --git a/src/hev-socks5-session-udp.c b/src/hev-socks5-session-udp.c
+index 9a283f2..2c7446e 100644
+--- a/src/hev-socks5-session-udp.c
++++ b/src/hev-socks5-session-udp.c
+@@ -28,6 +28,7 @@
+ #include "hev-socks5-tunnel.h"
+ 
+ #include "hev-socks5-session-udp.h"
++#include "hev-udp-diagnostics.h"
+ 
+ typedef struct _HevSocks5UDPFrame HevSocks5UDPFrame;
+ 
+@@ -50,6 +51,11 @@ task_io_yielder (HevTaskYieldType type, void *data)
+         char buf;
+ 
+         res = recv (self->fd, &buf, sizeof (buf), 0);
++        {
++            int saved_errno = errno;
++            chuanshan_diag_udp_control ((int)res, saved_errno);
++            errno = saved_errno;
++        }
+         if ((res == 0) || ((res < 0) && (errno != EAGAIN))) {
+             hev_socks5_set_timeout (self, 0);
+             return -1;
+@@ -121,6 +127,11 @@ hev_socks5_session_udp_fwd_b (HevSocks5SessionUDP *self, unsigned int num)
+     }
+ 
+     res = hev_socks5_udp_recvmmsg (HEV_SOCKS5_UDP (self), msgv, num, 1);
++    {
++        int saved_errno = errno;
++        chuanshan_diag_udp_rx (res, saved_errno);
++        errno = saved_errno;
++    }
+     if (res <= 0) {
+         if (res == -1 && errno == EAGAIN)
+             return 0;
+@@ -287,6 +298,8 @@ hev_socks5_session_udp_splice (HevSocks5Session *base)
+         if (res_b >= 0)
+             res_b = hev_socks5_session_udp_fwd_b (self, num);
+ 
++        chuanshan_diag_udp_loop (res_f, res_b);
++
+         if (res_f > 0 || res_b > 0)
+             type = HEV_TASK_YIELD;
+         else if ((res_f & res_b) == 0)

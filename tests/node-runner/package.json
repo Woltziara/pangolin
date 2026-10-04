@@ -1,0 +1,11 @@
+{
+  "name": "tongdao-import-tests",
+  "private": true,
+  "scripts": {
+    "build": "node build.mjs",
+    "test": "node build.mjs && node parser.test.mjs && node userrule.test.mjs && node outboundready.test.mjs && node usercopy.test.mjs && node channel-policy.test.mjs && node app-route-model.test.mjs && node app-route-runtime.test.mjs && node app-route-diagnostics.test.mjs && node runtime-journal.test.mjs && node diagnostic-report-history.test.mjs && node background-probe-host.test.mjs && node canary-timing.test.mjs && node latency-probe.test.mjs && node connection-health.test.mjs && node node-endpoint.test.mjs && node ipv4-recovery.test.mjs && node connection-reconcile.test.mjs && node node-latency.test.mjs && node node-speed-hint.test.mjs && node redteam-fixes.test.mjs && node advanced-test-build.test.mjs && node free-release.test.mjs && node free-data-management.test.mjs && node huks-cleanup.test.mjs && node cancel-intent.test.mjs"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

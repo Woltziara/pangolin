@@ -1,0 +1,49 @@
+{
+  "v": 2,
+  "nodes": [
+    {
+      "id": "node-deadbeef",
+      "name": "日本 trojan",
+      "region": "日本",
+      "server": "jp1.example.com",
+      "port": 8443,
+      "protocol": "trojan",
+      "outbound": {
+        "protocol": "trojan",
+        "tag": "proxy",
+        "settings": {
+          "servers": [
+            {
+              "address": "jp1.example.com",
+              "port": 8443,
+              "password": "fake-password-123"
+            }
+          ]
+        },
+        "streamSettings": {
+          "network": "tcp",
+          "security": "tls",
+          "tlsSettings": {
+            "allowInsecure": false,
+            "serverName": "jp1.example.com"
+          },
+          "tcpSettings": {
+            "header": {
+              "type": "none"
+            }
+          }
+        }
+      },
+      "rawLink": "trojan://fake-password-123@jp1.example.com:8443?sni=jp1.example.com&allowInsecure=0#%E6%97%A5%E6%9C%AC%20trojan",
+      "sourceId": "import",
+      "favorite": false,
+      "group": "",
+      "customName": "",
+      "addedAt": 1700000000000,
+      "updatedAt": 1700000000000,
+      "latencyMs": -1,
+      "latencyText": "",
+      "latencyAt": 0
+    }
+  ]
+}

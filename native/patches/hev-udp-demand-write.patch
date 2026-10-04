@@ -1,0 +1,58 @@
+diff --git a/src/hev-socks5-session-udp.c b/src/hev-socks5-session-udp.c
+index 2c7446e..46a8509 100644
+--- a/src/hev-socks5-session-udp.c
++++ b/src/hev-socks5-session-udp.c
+@@ -69,6 +69,16 @@ task_io_yielder (HevTaskYieldType type, void *data)
+     return res;
+ }
+ 
++static int
++set_udp_interest (HevSocks5SessionUDP *self, unsigned int events)
++{
++    HevTask *task = hev_task_self ();
++    int fd = hev_socks5_udp_get_fd (HEV_SOCKS5_UDP (self));
++    if (hev_task_mod_fd (task, fd, events) < 0)
++        return hev_task_add_fd (task, fd, events);
++    return 0;
++}
++
+ static int
+ hev_socks5_session_udp_fwd_f (HevSocks5SessionUDP *self, unsigned int num)
+ {
+@@ -94,7 +104,18 @@ hev_socks5_session_udp_fwd_f (HevSocks5SessionUDP *self, unsigned int num)
+         msgv[i].addr = &frame->addr;
+     }
+ 
++    /* Harmony's UDP writable notifications can keep an otherwise idle task
++     * runnable. Retain writable wakeups while a queued send may block, but
++     * stop subscribing to them once that send has completed. */
++    if (set_udp_interest (self, POLLIN | POLLOUT) < 0)
++        return -1;
+     res = hev_socks5_udp_sendmmsg (HEV_SOCKS5_UDP (self), msgv, res);
++    {
++        int saved_errno = errno;
++        if (set_udp_interest (self, POLLIN) < 0)
++            return -1;
++        errno = saved_errno;
++    }
+     if (res <= 0) {
+         LOG_D ("%p socks5 session udp fwd f send", self);
+         return -1;
+@@ -287,8 +308,15 @@ hev_socks5_session_udp_splice (HevSocks5Session *base)
+ 
+     num = hev_config_get_misc_udp_copy_buffer_nums ();
+     fd = hev_socks5_udp_get_fd (HEV_SOCKS5_UDP (self));
+-    if (hev_task_mod_fd (task, fd, POLLIN | POLLOUT) < 0)
+-        hev_task_add_fd (task, fd, POLLIN | POLLOUT);
++    if (set_udp_interest (self, POLLIN) < 0)
++        return;
++    /* UDP-in-UDP's TCP socket only monitors association lifetime after the
++     * handshake; no further control-channel writes are pending. */
++    if (HEV_SOCKS5 (self)->type == HEV_SOCKS5_TYPE_UDP_IN_UDP &&
++        HEV_SOCKS5 (self)->fd != fd) {
++        if (hev_task_mod_fd (task, HEV_SOCKS5 (self)->fd, POLLIN) < 0)
++            return;
++    }
+ 
+     for (;;) {
+         HevTaskYieldType type;

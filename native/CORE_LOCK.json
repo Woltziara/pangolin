@@ -1,0 +1,65 @@
+{
+  "stage": "R1",
+  "note": "sha256 is last clean rebuild; packedSha256 is llvm-strip --strip-all of that raw file, not a copy from HAP.",
+  "strip": {
+    "tool": "llvm-strip",
+    "args": [
+      "--strip-all"
+    ]
+  },
+  "go": {
+    "version": "1.24.5",
+    "commit": "302a5306b6fad2f47196360b82561d1db1f954cf",
+    "os": "openharmony",
+    "arch": "arm64",
+    "tls": "TLSDESC",
+    "local_toolchain": ".runtime/native-build/ohos_golang_go",
+    "note": "OHOS Go fork. REBUILD_XRAY=1 fail-closed if local_toolchain or measured-go-commit.txt is missing; signing secrets stay out of tree."
+  },
+  "libxray": {
+    "repo": "https://github.com/XTLS/libXray.git",
+    "commit": "20d70a98",
+    "xray_core": "v1.250803.0",
+    "xray_version_label": "25.8.3",
+    "exports": [
+      "CGoHello",
+      "CGoRunXrayFromJSON",
+      "CGoStopXray",
+      "CGoXrayVersion",
+      "CGoPing",
+      "CGoQueryStats"
+    ],
+    "warmup": "CGoHello before any other CGo",
+    "artifact": "entry/src/main/cpp/prebuilt/arm64-v8a/libxray.so",
+    "sha256": "20d8c912380a386f535d3409d1f70023666e9de8d7d2c831439f2c841e6b79b7",
+    "packedSha256": "185620a755e6a06cf2e606ef9d9d23ab5f4b4b60c1a3b584c677fde28da43408",
+    "frozenSha256": "9d7d98de49fa037df802318fdccc80e1b20b3bf08655603d6e0b966c11bd18e1"
+  },
+  "hev": {
+    "repo": "https://github.com/heiher/hev-socks5-tunnel.git",
+    "tag": "2.17.1",
+    "commit": "9a06bc6",
+    "artifact": "entry/src/main/cpp/prebuilt/arm64-v8a/libhevsocks5tun.so",
+    "sha256": "546ef955cfef0820e0ba631ece6fc2ad611e2bd46316f333afac96dd3ab9986f",
+    "packedSha256": "9dc50bb7df39b7797ca06433097172dff2566209273c6598f5531f2644222acb",
+    "frozenSha256": "2a38605507d80c0749e309f2f6de8b6c5200d9114a0ea97d4844248ab062bc60",
+    "diagnostic": "udp-counters-v1",
+    "fix": "socket-demand-events-v2",
+    "appRouting": "per-session-uid-v1"
+  },
+  "patches": [
+    "native/patches/libxray-cgohello.patch",
+    "native/patches/libxray-single-start.py",
+    "native/patches/xray-protect-fail-closed.py",
+    "native/patches/hev-udp-diagnostics.patch",
+    "native/patches/hev-udp-diagnostics-task-system.patch",
+    "native/patches/hev-udp-diagnostics.c",
+    "native/patches/hev-udp-diagnostics.h",
+    "native/patches/hev-udp-demand-write.patch",
+    "native/patches/hev-tcp-demand-events.patch",
+    "native/patches/hev-socket-wait-events.patch",
+    "native/patches/hev-app-routing.patch",
+    "native/patches/app-flow-route.h",
+    "native/patches/hev-tun-progress.py"
+  ]
+}

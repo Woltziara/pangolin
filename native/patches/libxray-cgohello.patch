@@ -1,0 +1,12 @@
+--- a/build/template/main.go
++++ b/build/template/main.go
+@@
+ //export CGoXrayVersion
+ func CGoXrayVersion() *C.char {
+ 	return C.CString(XrayVersion())
+ }
++
++//export CGoHello
++func CGoHello() *C.char {
++	return C.CString("hello-from-libxray")
++}

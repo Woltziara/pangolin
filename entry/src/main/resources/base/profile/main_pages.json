@@ -1,0 +1,15 @@
+{
+  "src": [
+    "pages/Index",
+    "pages/Import",
+    "pages/Subscriptions",
+    "pages/Nodes",
+    "pages/NodeDetail",
+    "pages/Settings",
+    "pages/Rules",
+    "pages/AppRoutes",
+    "pages/Diagnostics",
+    "pages/About",
+    "pages/SkinPreview"
+  ]
+}

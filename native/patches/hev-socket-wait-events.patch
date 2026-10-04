@@ -1,0 +1,112 @@
+diff --git a/src/lib/io/socket/hev-task-io-socket.c b/src/lib/io/socket/hev-task-io-socket.c
+index f6897cc..7e53399 100644
+--- a/src/lib/io/socket/hev-task-io-socket.c
++++ b/src/lib/io/socket/hev-task-io-socket.c
+@@ -19,6 +19,17 @@
+ 
+ #include "hev-task-io-socket.h"
+ 
++/* Select the event actually awaited. Permanently writable sockets must not
++ * wake a coroutine that is waiting for incoming bytes on HarmonyOS. */
++static int
++set_wait_interest (int fd, unsigned int events)
++{
++    HevTask *task = hev_task_self ();
++    if (hev_task_mod_fd (task, fd, events) < 0)
++        return hev_task_add_fd (task, fd, events);
++    return 0;
++}
++
+ EXPORT_SYMBOL int
+ hev_task_io_socket_socket (int domain, int type, int protocol)
+ {
+@@ -88,6 +99,8 @@ retry:
+     res = connect (fd, addr, addr_len);
+     if (res < 0) {
+         if (errno == EINPROGRESS || errno == EALREADY) {
++            if (set_wait_interest (fd, POLLOUT) < 0)
++                return -2;
+             if (yielder) {
+                 if (yielder (HEV_TASK_WAITIO, yielder_data))
+                     return -2;
+@@ -116,6 +129,8 @@ retry:
+     new_fd = accept4 (fd, addr, addr_len, SOCK_NONBLOCK);
+ #endif
+     if (new_fd < 0 && errno == EAGAIN) {
++        if (set_wait_interest (fd, POLLIN) < 0)
++            return -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return -2;
+@@ -149,6 +164,8 @@ hev_task_io_socket_recv (int fd, void *buf, size_t len, int flags,
+ retry:
+     s = recv (fd, buf + size, len - size, flags & ~MSG_WAITALL);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLIN) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -181,6 +198,8 @@ hev_task_io_socket_send (int fd, const void *buf, size_t len, int flags,
+ retry:
+     s = send (fd, buf + size, len - size, flags & ~MSG_WAITALL);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLOUT) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -215,6 +234,8 @@ retry:
+     s = recvfrom (fd, buf + size, len - size, flags & ~MSG_WAITALL, addr,
+                   addr_len);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLIN) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -249,6 +270,8 @@ retry:
+     s = sendto (fd, buf + size, len - size, flags & ~MSG_WAITALL, addr,
+                 addr_len);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLOUT) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -296,6 +319,8 @@ hev_task_io_socket_recvmsg (int fd, struct msghdr *msg, int flags,
+ retry:
+     s = recvmsg (fd, &mh, flags & ~MSG_WAITALL);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLIN) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -357,6 +382,8 @@ hev_task_io_socket_sendmsg (int fd, const struct msghdr *msg, int flags,
+ retry:
+     s = sendmsg (fd, &mh, flags & ~MSG_WAITALL);
+     if (s < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLOUT) < 0)
++            return size ? size : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return size ? size : -2;
+@@ -411,6 +438,8 @@ retry:
+     }
+ #endif
+     if (r < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLIN) < 0)
++            return c ? c : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return c ? c : -2;
+@@ -451,6 +480,8 @@ retry:
+     }
+ #endif
+     if (r < 0 && errno == EAGAIN && !(flags & MSG_DONTWAIT)) {
++        if (set_wait_interest (fd, POLLOUT) < 0)
++            return c ? c : -2;
+         if (yielder) {
+             if (yielder (HEV_TASK_WAITIO, yielder_data))
+                 return c ? c : -2;

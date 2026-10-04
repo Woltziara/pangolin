@@ -1,0 +1,36 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "穿山甲：把浏览器流量送进可观察的隧道"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "穿山甲诊断"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "穿山甲"
+    },
+    {
+      "name": "TunnelVpnAbility_label",
+      "value": "穿山甲 VPN"
+    },
+    {
+      "name": "TunnelVpnAbility_desc",
+      "value": "系统 VPN 扩展，读取 TUN 并转发到代理内核"
+    },
+    {
+      "name": "internet_reason",
+      "value": "建立隧道并检查网络归属"
+    },
+    {
+      "name": "network_info_reason",
+      "value": "读取系统默认网、网卡和 DNS"
+    },
+    {
+      "name": "keep_background_reason",
+      "value": "穿山甲在后台继续转发并做无登录探测，不依赖主界面定时器"
+    }
+  ]
+}

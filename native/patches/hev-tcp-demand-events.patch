@@ -1,0 +1,77 @@
+diff --git a/src/hev-socks5-session-tcp.c b/src/hev-socks5-session-tcp.c
+index a0475ab..fa47f5f 100644
+--- a/src/hev-socks5-session-tcp.c
++++ b/src/hev-socks5-session-tcp.c
+@@ -26,6 +26,44 @@
+ #include "hev-socks5-tunnel.h"
+ 
+ #include "hev-socks5-session-tcp.h"
++#include "hev-udp-diagnostics.h"
++
++static unsigned int
++tcp_needed_events (HevSocks5SessionTCP *self, int forward, int backward)
++{
++    unsigned int events = 0;
++    if (forward >= 0 && self->queue)
++        events |= POLLOUT;
++    if (backward >= 0 && hev_ring_buffer_get_use_size (self->buffer) <
++                             hev_ring_buffer_get_max_size (self->buffer))
++        events |= POLLIN;
++    return events;
++}
++
++static int
++set_tcp_interest (HevSocks5SessionTCP *self, unsigned int events,
++                  unsigned int *current)
++{
++    HevTask *task = hev_task_self ();
++    int fd = HEV_SOCKS5 (self)->fd;
++    int res;
++    if (events == *current)
++        return 0;
++    if (!events) {
++        /* A full downstream buffer is resumed by TUN ACK callbacks, not by
++         * repeated readability/HUP on the upstream socket. */
++        hev_task_del_fd (task, fd);
++        *current = 0;
++        return 0;
++    }
++    res = hev_task_mod_fd (task, fd, events);
++    if (res < 0)
++        res = hev_task_add_fd (task, fd, events);
++    if (res < 0)
++        return res;
++    *current = events;
++    return 0;
++}
+ 
+ static int
+ task_io_yielder (HevTaskYieldType type, void *data)
+@@ -196,6 +234,7 @@ hev_socks5_session_tcp_splice (HevSocks5Session *base)
+     int tcp_buffer_size;
+     int res_f = 1;
+     int res_b = 1;
++    unsigned int current_events = ~0u;
+ 
+     LOG_D ("%p socks5 session tcp splice", self);
+ 
+@@ -215,6 +254,11 @@ hev_socks5_session_tcp_splice (HevSocks5Session *base)
+         if (res_b >= 0)
+             res_b = tcp_splice_b (self);
+ 
++        chuanshan_diag_tcp_loop (res_f, res_b);
++        if (set_tcp_interest (self, tcp_needed_events (self, res_f, res_b),
++                              &current_events) < 0)
++            break;
++
+         if (res_f > 0 || res_b > 0)
+             type = HEV_TASK_YIELD;
+         else if ((res_f & res_b) == 0)
+@@ -226,6 +270,7 @@ hev_socks5_session_tcp_splice (HevSocks5Session *base)
+             break;
+     }
+ 
++    set_tcp_interest (self, 0, &current_events);
+     while (self->pcb) {
+         if (hev_ring_buffer_get_use_size (self->buffer) == 0)
+             break;

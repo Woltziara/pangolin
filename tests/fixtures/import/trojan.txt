@@ -1,0 +1,1 @@
+trojan://fake-password-123@jp1.example.com:8443?sni=jp1.example.com&allowInsecure=0#%E6%97%A5%E6%9C%AC%20trojan

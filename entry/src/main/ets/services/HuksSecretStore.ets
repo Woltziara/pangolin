@@ -1,0 +1,289 @@
+import { common } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { huks } from '@kit.UniversalKeystoreKit';
+import {
+  APPLIED_FILE,
+  applyNewCommit,
+  COMMIT_FILE,
+  COMMIT_NEXT_FILE,
+  CommitFileOps,
+  ENVELOPE_FILE,
+  ENVELOPE_NEXT_FILE,
+  META_FILE,
+  META_STAGING_FILE,
+  OUTBOUND_PLAIN_FILE,
+  PREV_APPLIED_FILE,
+  PREV_COMMIT_FILE,
+  PREV_ENVELOPE_FILE,
+  PREV_META_FILE,
+  readCommittedEnvelopeAsync,
+  restorePreviousCommit,
+  STAGING_CLEANUP_WARNING
+} from '../core/OutboundCommit';
+import { StatusStore } from './StatusStore';
+
+class StatusCommitFiles implements CommitFileOps {
+  private context: common.Context;
+  constructor(context: common.Context) {
+    this.context = context;
+  }
+  read(name: string): string {
+    return StatusStore.readText(this.context, name);
+  }
+  write(name: string, text: string): void {
+    StatusStore.writeText(this.context, name, text);
+  }
+  remove(name: string): void {
+    StatusStore.removeFile(this.context, name);
+  }
+}
+
+const LOG_DOMAIN: number = 0x3200;
+const LOG_TAG: string = 'HuksStore';
+const ALIAS: string = 'tongdao.outbound.v1';
+const AAD_TEXT: string = 'tongdao-outbound-v1';
+
+export class HuksSecretStore {
+  static async isAvailable(): Promise<boolean> {
+    try {
+      await huks.isKeyItemExist(ALIAS, HuksSecretStore.emptyOptions());
+      return true;
+    } catch (error) {
+      const text = JSON.stringify(error);
+      if (text.indexOf('801') >= 0) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'HUKS unavailable %{public}s', text);
+        return false;
+      }
+      return true;
+    }
+  }
+
+  static async protectOutbound(context: common.Context): Promise<void> {
+    const newPlain = StatusStore.readText(context, OUTBOUND_PLAIN_FILE);
+    if (newPlain.length < 20) {
+      return;
+    }
+    const files = new StatusCommitFiles(context);
+    const stagingMeta = files.read(META_STAGING_FILE);
+    const currentMeta = files.read(META_FILE);
+    const newMeta = stagingMeta.length > 2 ? stagingMeta : currentMeta;
+    const huksAvailable = await HuksSecretStore.isAvailable();
+    let wrapOk = false;
+    let envelope = '';
+    if (huksAvailable) {
+      try {
+        await HuksSecretStore.ensureKey();
+        const nonce = HuksSecretStore.randomNonce();
+        const cipher = await HuksSecretStore.cipher(true, nonce, HuksSecretStore.encode(newPlain));
+        envelope = HuksSecretStore.envelopeJson(nonce, cipher);
+        const roundtrip = HuksSecretStore.decode(await HuksSecretStore.cipher(false, nonce, cipher));
+        if (roundtrip !== newPlain) {
+          throw new Error('HUKS roundtrip mismatch');
+        }
+        wrapOk = true;
+      } catch (error) {
+        wrapOk = false;
+        hilog.error(LOG_DOMAIN, LOG_TAG, 'HUKS wrap failed %{public}s', JSON.stringify(error));
+      }
+    }
+    const err = applyNewCommit(files, newPlain, newMeta, envelope, huksAvailable, wrapOk);
+    if (err === STAGING_CLEANUP_WARNING) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, '%{public}s', err);
+    } else if (err.length > 0) {
+      throw new Error(err);
+    }
+    hilog.info(LOG_DOMAIN, LOG_TAG, 'outbound commit applied');
+  }
+
+  static async readOutbound(context: common.Context): Promise<string> {
+    const files = new StatusCommitFiles(context);
+    return readCommittedEnvelopeAsync(files, (envelope: string) => HuksSecretStore.unwrapEnvelope(envelope));
+  }
+
+  static restorePrevious(context: common.Context): boolean {
+    return restorePreviousCommit(new StatusCommitFiles(context));
+  }
+
+  private static async unwrapEnvelope(envelope: string): Promise<string> {
+    try {
+      const parsed = JSON.parse(envelope) as Record<string, Object>;
+      const nonceB64 = parsed['nonce'];
+      const ctB64 = parsed['ct'];
+      if (typeof nonceB64 === 'string' && typeof ctB64 === 'string') {
+        const nonce = HuksSecretStore.b64decode(nonceB64);
+        const ct = HuksSecretStore.b64decode(ctB64);
+        const plain = HuksSecretStore.decode(await HuksSecretStore.cipher(false, nonce, ct));
+        if (plain.length >= 20) {
+          return plain;
+        }
+      }
+    } catch (error) {
+      hilog.error(LOG_DOMAIN, LOG_TAG, 'HUKS unwrap failed %{public}s', JSON.stringify(error));
+      throw new Error('节点密文无法解开');
+    }
+    throw new Error('节点密文无法解开');
+  }
+
+  static notePending(context: common.Context): void {
+    hilog.warn(LOG_DOMAIN, LOG_TAG, 'HUKS store pending; filesDir import only. context=%{public}s',
+      context.filesDir);
+  }
+
+  /**
+   * Phase D「清空全部数据」：删除缓存的节点凭据——filesDir 里的 HUKS 信封文件 +
+   * HUKS 密钥本体。两者都允许不存在（静默跳过）。
+   */
+  static async removeProtected(context: common.Context): Promise<void> {
+    StatusStore.removeFile(context, ENVELOPE_FILE);
+    StatusStore.removeFile(context, PREV_ENVELOPE_FILE);
+    StatusStore.removeFile(context, ENVELOPE_NEXT_FILE);
+    StatusStore.removeFile(context, COMMIT_FILE);
+    StatusStore.removeFile(context, PREV_COMMIT_FILE);
+    StatusStore.removeFile(context, COMMIT_NEXT_FILE);
+    StatusStore.removeFile(context, META_STAGING_FILE);
+    StatusStore.removeFile(context, PREV_META_FILE);
+    StatusStore.removeFile(context, APPLIED_FILE);
+    StatusStore.removeFile(context, PREV_APPLIED_FILE);
+    try {
+      await huks.deleteKeyItem(ALIAS, HuksSecretStore.emptyOptions());
+      hilog.info(LOG_DOMAIN, LOG_TAG, 'HUKS key deleted');
+    } catch (error) {
+      hilog.warn(LOG_DOMAIN, LOG_TAG, 'deleteKeyItem %{public}s', JSON.stringify(error));
+      if (await HuksSecretStore.keyExists()) {
+        throw new Error('节点加密密钥未能清理');
+      }
+    }
+  }
+
+  private static async keyExists(): Promise<boolean> {
+    try {
+      return await huks.isKeyItemExist(ALIAS, HuksSecretStore.emptyOptions());
+    } catch (error) {
+      // This API reports a missing alias by rejecting, not only by returning false.
+      const record = error as Record<string, Object>;
+      if (record['code'] === 12000011) { return false; }
+      throw new Error(`无法确认节点加密密钥状态（${record['code']}）`);
+    }
+  }
+
+  private static async ensureKey(): Promise<void> {
+    const exists = await HuksSecretStore.keyExists();
+    if (exists) {
+      return;
+    }
+    await huks.generateKeyItem(ALIAS, {
+      properties: HuksSecretStore.keyProperties(
+        huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT | huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT)
+    });
+  }
+
+  private static async cipher(encrypt: boolean, nonce: Uint8Array, data: Uint8Array): Promise<Uint8Array> {
+    const purpose = encrypt ? huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT :
+      huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT;
+    const properties: Array<huks.HuksParam> = HuksSecretStore.keyProperties(purpose);
+    const nonceParam: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_NONCE,
+      value: nonce
+    };
+    const aadParam: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_ASSOCIATED_DATA,
+      value: HuksSecretStore.encode(AAD_TEXT)
+    };
+    properties.push(nonceParam);
+    properties.push(aadParam);
+    let input: Uint8Array = data;
+    if (!encrypt) {
+      if (data.length <= 16) { throw new Error('节点密文缺少认证标签'); }
+      properties.push({ tag: huks.HuksTag.HUKS_TAG_AE_TAG, value: data.slice(data.length - 16) });
+      input = data.slice(0, data.length - 16);
+    }
+    const session = await huks.initSession(ALIAS, { properties: properties });
+    try {
+      const finished = await huks.finishSession(session.handle, {
+        properties: [],
+        inData: input
+      });
+      if (finished.outData === undefined) {
+        throw new Error('HUKS empty outData');
+      }
+      return finished.outData;
+    } catch (error) {
+      try {
+        await huks.abortSession(session.handle, { properties: [] });
+      } catch (abortError) {
+        hilog.warn(LOG_DOMAIN, LOG_TAG, 'abort %{public}s', JSON.stringify(abortError));
+      }
+      throw new Error(`HUKS cipher failed ${JSON.stringify(error)}`);
+    }
+  }
+
+  private static keyProperties(purpose: number): Array<huks.HuksParam> {
+    const properties: Array<huks.HuksParam> = [];
+    const alg: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_ALGORITHM,
+      value: huks.HuksKeyAlg.HUKS_ALG_AES
+    };
+    const pur: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_PURPOSE,
+      value: purpose
+    };
+    const size: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_KEY_SIZE,
+      value: huks.HuksKeySize.HUKS_AES_KEY_SIZE_256
+    };
+    const pad: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_PADDING,
+      value: huks.HuksKeyPadding.HUKS_PADDING_NONE
+    };
+    const mode: huks.HuksParam = {
+      tag: huks.HuksTag.HUKS_TAG_BLOCK_MODE,
+      value: huks.HuksCipherMode.HUKS_MODE_GCM
+    };
+    properties.push(alg);
+    properties.push(pur);
+    properties.push(size);
+    properties.push(pad);
+    properties.push(mode);
+    return properties;
+  }
+
+  private static emptyOptions(): huks.HuksOptions {
+    return { properties: [] };
+  }
+
+  private static randomNonce(): Uint8Array {
+    const uuid = util.generateRandomBinaryUUID();
+    const nonce = new Uint8Array(12);
+    for (let i = 0; i < 12; i++) {
+      nonce[i] = uuid[i];
+    }
+    return nonce;
+  }
+
+  private static envelopeJson(nonce: Uint8Array, cipher: Uint8Array): string {
+    const record: Record<string, Object> = {};
+    record['v'] = 1;
+    record['alg'] = 'AES-256-GCM';
+    record['alias'] = ALIAS;
+    record['nonce'] = HuksSecretStore.b64encode(nonce);
+    record['ct'] = HuksSecretStore.b64encode(cipher);
+    return JSON.stringify(record);
+  }
+
+  private static encode(text: string): Uint8Array {
+    return new util.TextEncoder().encodeInto(text);
+  }
+
+  private static decode(bytes: Uint8Array): string {
+    return new util.TextDecoder('utf-8').decodeToString(bytes);
+  }
+
+  private static b64encode(bytes: Uint8Array): string {
+    return new util.Base64Helper().encodeToStringSync(bytes);
+  }
+
+  private static b64decode(text: string): Uint8Array {
+    return new util.Base64Helper().decodeSync(text);
+  }
+}

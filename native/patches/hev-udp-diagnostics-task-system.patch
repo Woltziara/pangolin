@@ -1,0 +1,32 @@
+diff --git a/src/kern/io/hev-task-io-reactor-epoll.h b/src/kern/io/hev-task-io-reactor-epoll.h
+index ef9c751..b5f8b1a 100644
+--- a/src/kern/io/hev-task-io-reactor-epoll.h
++++ b/src/kern/io/hev-task-io-reactor-epoll.h
+@@ -12,6 +12,8 @@
+ 
+ #include <poll.h>
+ #include <sys/epoll.h>
++#include <errno.h>
++#include "hev-udp-diagnostics.h"
+ 
+ #define HEV_TASK_IO_REACTOR_EVENT_GEN_MAX (1)
+ 
+@@ -45,7 +47,17 @@ hev_task_io_reactor_wait (HevTaskIOReactor *self,
+                           HevTaskIOReactorWaitEvent *events, int count,
+                           int timeout)
+ {
+-    return epoll_wait (self->fd, events, count, timeout);
++    int i;
++    int result = epoll_wait (self->fd, events, count, timeout);
++    int saved_errno = errno;
++    chuanshan_diag_poll (result, timeout);
++    for (i = 0; i < result; i++) {
++        unsigned int mask = events[i].events;
++        chuanshan_diag_event (mask & EPOLLIN, mask & EPOLLOUT,
++                             mask & EPOLLERR, mask & EPOLLHUP);
++    }
++    errno = saved_errno;
++    return result;
+ }
+ 
+ static inline void

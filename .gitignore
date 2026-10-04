@@ -1,0 +1,37 @@
+# Dependencies and build output
+**/node_modules/
+**/oh_modules/
+**/build/
+**/.hvigor/
+**/.cxx/
+**/.test/
+tests/node-runner/src/
+__pycache__/
+*.pyc
+.pytest_cache/
+# Local IDE configuration
+.idea/
+.vscode/
+.clangd
+local.properties
+.DS_Store
+# Private runtime, signing, exports and diagnostic evidence
+.runtime/
+local-secrets/
+evidence/
+*.p12
+*.p7b
+*.cer
+*.pem
+*.key
+*.keystore
+*.hap
+*.app
+*.env
+.env*
+build-profile.local.json5
+entry/src/main/resources/rawfile/runtime/
+entry/src/main/resources/rawfile/geo/
+# Native cores are built from pinned source, never uploaded as opaque binaries
+*.so
+*.a

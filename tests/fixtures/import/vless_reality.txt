@@ -1,0 +1,1 @@
+vless://00000000-0000-4000-8000-000000000000@us1.example.com:443?encryption=none&flow=xtls-rprx-vision&security=reality&sni=www.microsoft.com&fp=chrome&pbk=FAKE_PUBLIC_KEY_EXAMPLE&sid=ab&type=tcp#%E7%BE%8E%E5%9B%BD%20%E6%B5%8B%E8%AF%95

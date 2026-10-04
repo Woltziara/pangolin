@@ -1,0 +1,1 @@
+hy2://fake-hy2-auth@kr1.example.com:1443?sni=kr1.example.com&insecure=1&obfs-password=fake-obfs#%E9%9F%A9%E5%9B%BD%20hy2

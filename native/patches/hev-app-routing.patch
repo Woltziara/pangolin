@@ -1,0 +1,414 @@
+diff --git a/src/hev-socks5-session.h b/src/hev-socks5-session.h
+index 63cab6f..b0ec916 100644
+--- a/src/hev-socks5-session.h
++++ b/src/hev-socks5-session.h
+@@ -12,6 +12,7 @@
+ 
+ #include <hev-task.h>
+ 
++#include "app-flow-route.h"
+ #include "hev-list.h"
+ 
+ #define HEV_SOCKS5_SESSION(p) ((HevSocks5Session *)p)
+@@ -27,6 +28,8 @@ struct _HevSocks5SessionData
+     HevListNode node;
+     HevTask *task;
+     HevSocks5Session *self;
++    AppFlowTuple app_flow;
++    uint16_t socks_port;
+ };
+ 
+ struct _HevSocks5SessionIface
+@@ -44,6 +47,8 @@ void hev_socks5_session_terminate (HevSocks5Session *self);
+ 
+ void hev_socks5_session_set_task (HevSocks5Session *self, HevTask *task);
+ HevListNode *hev_socks5_session_get_node (HevSocks5Session *self);
++void hev_socks5_session_set_app_flow (HevSocks5Session *self,
++                                      const AppFlowTuple *tuple);
+ 
+ int hev_socks5_session_bind (HevSocks5 *self, int fd,
+                              const struct sockaddr *dest);
+diff --git a/src/hev-socks5-session.c b/src/hev-socks5-session.c
+index e946fa6..645f36c 100644
+--- a/src/hev-socks5-session.c
++++ b/src/hev-socks5-session.c
+@@ -8,14 +8,136 @@
+  */
+ 
+ #include <string.h>
++#include <unistd.h>
++
++#include <hev-task.h>
++#include <hev-task-io.h>
+ 
+ #include "hev-utils.h"
+ #include "hev-logger.h"
+ #include "hev-config.h"
++#include "hev-compiler.h"
+ #include "hev-socks5-client.h"
+ 
+ #include "hev-socks5-session.h"
+ 
++#define APP_ROUTE_TIMEOUT_MS 2000
++
++typedef struct
++{
++    HevSocks5Session *session;
++    unsigned int remaining;
++} AppRouteWait;
++
++static AppFlowBeginFn app_route_begin;
++static AppFlowCancelFn app_route_cancel;
++static void *app_route_opaque;
++
++void
++hev_socks5_tunnel_set_app_route_callbacks (AppFlowBeginFn begin,
++                                            AppFlowCancelFn cancel,
++                                            void *opaque)
++{
++    app_route_begin = begin;
++    app_route_cancel = cancel;
++    app_route_opaque = opaque;
++}
++
++static HevSocks5SessionData *
++hev_socks5_session_get_data (HevSocks5Session *self)
++{
++    HevListNode *node = hev_socks5_session_get_node (self);
++
++    return container_of (node, HevSocks5SessionData, node);
++}
++
++static uint16_t
++hev_socks5_session_get_socks_port (HevSocks5Session *self,
++                                    uint16_t default_port)
++{
++    HevSocks5SessionData *data = hev_socks5_session_get_data (self);
++
++    return data->socks_port ? data->socks_port : default_port;
++}
++
++static int
++app_route_io_yielder (HevTaskYieldType type, void *data)
++{
++    AppRouteWait *wait = data;
++
++    (void)type;
++    if (hev_socks5_get_timeout (HEV_SOCKS5 (wait->session)) == 0)
++        return -1;
++    wait->remaining = hev_task_sleep (wait->remaining);
++    if (!wait->remaining ||
++        hev_socks5_get_timeout (HEV_SOCKS5 (wait->session)) == 0)
++        return -1;
++
++    return 0;
++}
++
++static int
++hev_socks5_session_resolve_app_route (HevSocks5Session *self)
++{
++    HevSocks5SessionData *data = hev_socks5_session_get_data (self);
++    AppFlowBeginFn begin = app_route_begin;
++    AppFlowCancelFn cancel = app_route_cancel;
++    void *opaque = app_route_opaque;
++    AppRouteWait wait = { self, APP_ROUTE_TIMEOUT_MS };
++    AppFlowReply reply;
++    uint64_t request_id = 0;
++    size_t offset = 0;
++    int read_fd;
++    int res = -1;
++
++    if (!begin)
++        return 0;
++    if (!cancel)
++        return -1;
++
++    read_fd = begin (&data->app_flow, &request_id, opaque);
++    if (read_fd == -2) {
++        if (request_id)
++            cancel (request_id, opaque);
++        return 0;
++    }
++    if (read_fd < 0 || !request_id) {
++        if (read_fd >= 0)
++            close (read_fd);
++        if (request_id)
++            cancel (request_id, opaque);
++        return -1;
++    }
++
++    if (hev_task_add_fd (hev_task_self (), read_fd, POLLIN) < 0)
++        goto cleanup;
++
++    while (offset < sizeof (reply)) {
++        ssize_t size;
++
++        size = hev_task_io_read (read_fd, (char *)&reply + offset,
++                                 sizeof (reply) - offset,
++                                 app_route_io_yielder, &wait);
++        if (size <= 0)
++            goto cleanup_registered;
++        offset += size;
++    }
++
++    if (reply.status == 1) {
++        res = 0;
++    } else if (reply.status == 0 && reply.socks_port != 0) {
++        data->socks_port = reply.socks_port;
++        res = 0;
++    }
++
++cleanup_registered:
++    hev_task_del_fd (hev_task_self (), read_fd);
++cleanup:
++    close (read_fd);
++    cancel (request_id, opaque);
++    return res;
++}
++
+ void
+ hev_socks5_session_run (HevSocks5Session *self)
+ {
+@@ -27,8 +149,15 @@ hev_socks5_session_run (HevSocks5Session *self)
+ 
+     srv = hev_config_get_socks5_server ();
+ 
++    res = hev_socks5_session_resolve_app_route (self);
++    if (res < 0) {
++        LOG_I ("%p socks5 session app route", self);
++        return;
++    }
++
+     res = hev_socks5_client_connect (HEV_SOCKS5_CLIENT (self), srv->addr,
+-                                     srv->port);
++                                     hev_socks5_session_get_socks_port (
++                                         self, srv->port));
+     if (res < 0) {
+         LOG_I ("%p socks5 session connect", self);
+         return;
+@@ -80,6 +209,15 @@ hev_socks5_session_get_node (HevSocks5Session *self)
+     return iface->get_node (self);
+ }
+ 
++void
++hev_socks5_session_set_app_flow (HevSocks5Session *self,
++                                  const AppFlowTuple *tuple)
++{
++    HevSocks5SessionData *data = hev_socks5_session_get_data (self);
++
++    data->app_flow = *tuple;
++}
++
+ int
+ hev_socks5_session_bind (HevSocks5 *self, int fd, const struct sockaddr *dest)
+ {
+diff --git a/src/hev-socks5-tunnel.c b/src/hev-socks5-tunnel.c
+index 2fe66d7..8f4a667 100644
+--- a/src/hev-socks5-tunnel.c
++++ b/src/hev-socks5-tunnel.c
+@@ -37,6 +37,7 @@
+ #include "hev-config-const.h"
+ #include "hev-socks5-session-tcp.h"
+ #include "hev-socks5-session-udp.h"
++#include "app-flow-route.h"
+ 
+ #include "hev-socks5-tunnel.h"
+ 
+@@ -71,6 +72,42 @@ static HevTask *task_lwip_io;
+ static HevTask *task_lwip_timer;
+ static HevList session_set;
+ 
++static int
++app_flow_copy_address (uint8_t output[16], const ip_addr_t *address)
++{
++    memset (output, 0, 16);
++    if (IP_IS_V4 (address)) {
++        memcpy (output, &ip_2_ip4 (address)->addr, 4);
++        return 4;
++    }
++    if (IP_IS_V6 (address)) {
++        memcpy (output, ip_2_ip6 (address)->addr, 16);
++        return 6;
++    }
++    return -1;
++}
++
++static int
++app_flow_tuple_init (AppFlowTuple *tuple, uint8_t protocol,
++                     const ip_addr_t *source, uint16_t source_port,
++                     const ip_addr_t *destination, uint16_t destination_port)
++{
++    int source_family;
++    int destination_family;
++
++    memset (tuple, 0, sizeof (*tuple));
++    source_family = app_flow_copy_address (tuple->source, source);
++    destination_family = app_flow_copy_address (tuple->destination, destination);
++    if (source_family < 0 || source_family != destination_family)
++        return -1;
++
++    tuple->family = source_family;
++    tuple->protocol = protocol;
++    tuple->source_port = source_port;
++    tuple->destination_port = destination_port;
++    return 0;
++}
++
+ static int
+ task_io_yielder (HevTaskYieldType type, void *data)
+ {
+@@ -175,6 +212,7 @@ tcp_accept_handler (void *arg, struct tcp_pcb *pcb, err_t err)
+ {
+     HevSocks5SessionTCP *tcp;
+     HevListNode *node;
++    AppFlowTuple tuple;
+     int stack_size;
+     HevTask *task;
+ 
+@@ -184,17 +222,23 @@ tcp_accept_handler (void *arg, struct tcp_pcb *pcb, err_t err)
+     if (!READ_ONCE (run))
+         return ERR_RST;
+ 
+-    tcp = hev_socks5_session_tcp_new (pcb, &mutex);
+-    if (!tcp)
+-        return ERR_MEM;
++    if (app_flow_tuple_init (&tuple, 6, &pcb->remote_ip, pcb->remote_port,
++                             &pcb->local_ip, pcb->local_port) < 0)
++        return ERR_RST;
+ 
+     stack_size = hev_config_get_misc_task_stack_size ();
+     task = hev_task_new (stack_size);
+-    if (!task) {
+-        hev_object_unref (HEV_OBJECT (tcp));
++    if (!task)
++        return ERR_MEM;
++
++    tcp = hev_socks5_session_tcp_new (pcb, &mutex);
++    if (!tcp) {
++        hev_task_unref (task);
+         return ERR_MEM;
+     }
+ 
++    hev_socks5_session_set_app_flow (HEV_SOCKS5_SESSION (tcp), &tuple);
++
+     hev_socks5_session_set_task (HEV_SOCKS5_SESSION (tcp), task);
+     node = hev_socks5_session_get_node (HEV_SOCKS5_SESSION (tcp));
+     hev_socks5_tunnel_insert_session (node);
+@@ -234,18 +278,43 @@ exit:
+     udp_remove (pcb);
+ }
+ 
++static void
++udp_drop_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
++                  const ip_addr_t *addr, u16_t port)
++{
++    (void)arg;
++    (void)addr;
++    (void)port;
++    pbuf_free (p);
++    udp_recv (pcb, NULL, NULL);
++    udp_remove (pcb);
++}
++
++static void
++udp_drop_on_second_pass (struct udp_pcb *pcb)
++{
++    udp_recv (pcb, udp_drop_handler, NULL);
++}
++
+ static void
+ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
+                   const ip_addr_t *addr, u16_t port)
+ {
+     HevSocks5SessionUDP *udp;
+     HevListNode *node;
++    AppFlowTuple tuple;
+     HevMappedDNS *dns;
+     int stack_size;
+     HevTask *task;
+ 
+     if (!READ_ONCE (run)) {
+-        udp_remove (pcb);
++        udp_drop_on_second_pass (pcb);
++        return;
++    }
++
++    if (app_flow_tuple_init (&tuple, 17, &pcb->remote_ip,
++                             pcb->remote_port, addr, port) < 0) {
++        udp_drop_on_second_pass (pcb);
+         return;
+     }
+ 
+@@ -259,19 +328,22 @@ udp_recv_handler (void *arg, struct udp_pcb *pcb, struct pbuf *p,
+         }
+     }
+ 
+-    udp = hev_socks5_session_udp_new (pcb, &mutex);
+-    if (!udp) {
+-        udp_remove (pcb);
+-        return;
+-    }
+-
+     stack_size = hev_config_get_misc_task_stack_size ();
+     task = hev_task_new (stack_size);
+     if (!task) {
+-        hev_object_unref (HEV_OBJECT (udp));
++        udp_drop_on_second_pass (pcb);
+         return;
+     }
+ 
++    udp = hev_socks5_session_udp_new (pcb, &mutex);
++    if (!udp) {
++        hev_task_unref (task);
++        udp_drop_on_second_pass (pcb);
++        return;
++    }
++
++    hev_socks5_session_set_app_flow (HEV_SOCKS5_SESSION (udp), &tuple);
++
+     hev_socks5_session_set_task (HEV_SOCKS5_SESSION (udp), task);
+     node = hev_socks5_session_get_node (HEV_SOCKS5_SESSION (udp));
+     hev_socks5_tunnel_insert_session (node);
+diff --git a/src/hev-main.c b/src/hev-main.c
+index 9d90c5a..45dff11 100644
+--- a/src/hev-main.c
++++ b/src/hev-main.c
+@@ -23,6 +23,7 @@
+ #include "hev-logger.h"
+ #include "hev-socks5-logger.h"
+ #include "hev-socks5-tunnel.h"
++#include "app-flow-route.h"
+ 
+ #include "hev-main.h"
+ 
+@@ -93,10 +94,11 @@ int
+ hev_socks5_tunnel_main_from_file (const char *config_path, int tun_fd)
+ {
+     int res = hev_config_init_from_file (config_path);
+-    if (res < 0)
+-        return -1;
++    if (res >= 0)
++        res = hev_socks5_tunnel_main_inner (tun_fd);
+ 
+-    return hev_socks5_tunnel_main_inner (tun_fd);
++    hev_socks5_tunnel_set_app_route_callbacks (NULL, NULL, NULL);
++    return res < 0 ? -1 : res;
+ }
+ 
+ int
+@@ -104,10 +106,11 @@ hev_socks5_tunnel_main_from_str (const unsigned char *config_str,
+                                  unsigned int config_len, int tun_fd)
+ {
+     int res = hev_config_init_from_str (config_str, config_len);
+-    if (res < 0)
+-        return -1;
++    if (res >= 0)
++        res = hev_socks5_tunnel_main_inner (tun_fd);
+ 
+-    return hev_socks5_tunnel_main_inner (tun_fd);
++    hev_socks5_tunnel_set_app_route_callbacks (NULL, NULL, NULL);
++    return res < 0 ? -1 : res;
+ }
+ 
+ int
+

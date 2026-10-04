@@ -1,0 +1,5 @@
+trojan://fake-password-123@jp1.example.com:8443?sni=jp1.example.com&allowInsecure=0#%E6%97%A5%E6%9C%AC%20trojan
+ss://YWVzLTEyOC1nY206ZmFrZS1zcy1wYXNzd29yZA@sg1.example.com:8388#%E6%96%B0%E5%8A%A0%E5%9D%A1%20ss
+
+snell://whatever@example.com:443
+hello world not a link
