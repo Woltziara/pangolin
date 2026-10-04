@@ -1,39 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
-if [[ "${TONGDAO_NATIVE_BUILD:-0}" != "1" && "${TONGDAO_R1_PUBLISH:-0}" != "1" ]]; then
-  echo "ERROR: native libxray builder is not a publish entry. Use scripts/r1-build.sh REBUILD_XRAY=1" >&2
+# Internal pinned-core builder; use scripts/build.sh.
+if [[ "${TONGDAO_NATIVE_BUILD:-0}" != "1" ]]; then
+  echo "Use scripts/build.sh to prepare the pinned toolchain and source revisions." >&2
   exit 2
 fi
-
-# 交叉编译 Xray 内核为 HarmonyOS 的 libxray.so。
-#
-# 走 **OHOS 官方 Go fork + GOOS=openharmony**（与 build_libsingbox_ohos.sh 同一套
-# 配方），这是目前真机上唯一不崩的编法，详见 docs/building-native-cores.md。
-#
-# ┌─ GOOS 选择：一段曾经的“两难”，现已由 OHOS Go fork 终结 ───────────────────────────┐
-# │ HarmonyOS 是 musl libc（ld-musl-aarch64.so.1）。Go 在 arm64 上怎么存 goroutine     │
-# │ 指针 g，决定了 c-shared 库能不能 dlopen、外来线程能不能调 cgo：                      │
-# │                                                                                    │
-# │  * 标准 Go + GOOS=android（已弃用）：g 存在 bionic 固定 TLS 槽（#16，纯 DATA 无 TLS │
-# │    重定位）。dlopen 能过，但该槽在 OHOS-musl 上非 Go 创建的线程里是垃圾——每次从     │
-# │    ArkTS/UI 线程 cgo→Go 都 SIGSEGV。真机实测连 VPN 扩展线程也已踩爆，故已彻底放弃。  │
-# │  * 标准 Go + GOOS=linux：g 是真 ELF TLS（TPIDR_EL0），但带 initial-exec 重定位，     │
-# │    musl 拒绝在 dlopen 的库里用 IE-TLS → 整个原生桥加载失败。                         │
-# │  * OHOS Go fork + GOOS=openharmony（本脚本采用）：fork 给 arm64 补了 TLSDESC        │
-# │    （通用动态 TLS）。产物带真正的 PT_TLS + R_AARCH64_TLSDESC，musl 能 dlopen，      │
-# │    外来线程 cgo 也不再读到垃圾 g。这是真正的解。                                      │
-# │                                                                                    │
-# │ 工具链已从 openharmony-sig 的 go1.24.5 fork 换成 star4277/ohos-go v1.26.5-beta1     │
-# │ （go1.26.5，同样带 openharmony 端口 + arm64 TLSDESC），解锁 libXray 主线            │
-# │ （v26.7.28 需 go1.26.3）。数据面仍走 tun2socks（libxray 只提供 SOCKS 入站与诊断，   │
-# │ 不启用原生 TUN），故不导出 CGoSetTunFd；新版 API 改为单一 CGoInvoke 分发入口。      │
-# └────────────────────────────────────────────────────────────────────────────────────┘
-#
-# 用法：bash scripts/build_libxray_ohos.sh
-#
-# ⚠️ 无 OHOS NDK / go 工具链时无法本机验证编译；改动后请在装好工具链的环境实跑，
-#    并比对产物：nm -D 应只见 CGoInvoke/CGoFree 两个 global 符号、strings 应含
-#    xray-core@v1.2607xx（新核）、readelf -r 应有 R_AARCH64_TLSDESC。
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_HOME="${DEVECO_SDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk}"
@@ -44,17 +15,10 @@ OUT_DIR="${ROOT_DIR}/entry/src/main/cpp/prebuilt/arm64-v8a"
 LIBXRAY_REPO="${LIBXRAY_REPO:-https://github.com/XTLS/libXray.git}"
 GO_LDFLAGS_DEFAULT="-s -w -checklinkname=0 -buildid= -linkmode external -extldflags \"-Wl,--version-script=PLACEHOLDER -Wl,-z,lazy\""
 
-# Do not mkdir under $HOME. Sandbox rejects creating /path/to/user (GOPATH default ~/go).
-# Never clobber operator HOME; isolate Go caches and source into mktemp or .runtime.
-if [[ -z "${GOPATH:-}" ]]; then
-  GOPATH="$(mktemp -d /tmp/gopath.XXXXXX)"
-fi
-if [[ -z "${GOCACHE:-}" ]]; then
-  GOCACHE="$(mktemp -d /tmp/gocache.XXXXXX)"
-fi
-if [[ -z "${GOMODCACHE:-}" ]]; then
-  GOMODCACHE="${GOPATH}/pkg/mod"
-fi
+# Reuse project-local caches across native rebuilds without changing HOME.
+GOPATH="${GOPATH:-${ROOT_DIR}/.runtime/native-build/gopath}"
+GOCACHE="${GOCACHE:-${ROOT_DIR}/.runtime/native-build/go-cache}"
+GOMODCACHE="${GOMODCACHE:-${GOPATH}/pkg/mod}"
 export GOPATH GOCACHE GOMODCACHE
 export GOTOOLCHAIN=local
 mkdir -p "${GOPATH}" "${GOCACHE}" "${GOMODCACHE}"
@@ -76,10 +40,7 @@ OHOS_GO_FORK="${OHOS_GO_FORK:-${ROOT_DIR}/.runtime/native-build/ohos_golang_go}"
 OHOS_GO_COMMIT="${OHOS_GO_COMMIT:-302a5306b6fad2f47196360b82561d1db1f954cf}"
 LIBXRAY_PIN="${LIBXRAY_PIN:-20d70a98}"
 
-# git may not read ~/.gitconfig in this sandbox.
-export GIT_CONFIG_GLOBAL="${GIT_CONFIG_GLOBAL:-$(mktemp /tmp/gitconfig.XXXXXX)}"
-export GIT_CONFIG_NOSYSTEM=1
-: > "${GIT_CONFIG_GLOBAL}"
+# Keep the operator's Git configuration; this build never rewrites it.
 
 mkdir -p "${WORK_DIR}"
 rm -rf "${SRC_DIR}"
@@ -90,7 +51,7 @@ if [[ -x "${OHOS_GO_FORK}/bin/go" ]]; then
   export GOTOOLCHAIN=local
 else
   echo "ERROR: 找不到 OHOS Go fork: ${OHOS_GO_FORK}/bin/go" >&2
-  echo "  按 docs/building-native-cores.md 构建该工具链：" >&2
+  echo "  按 docs/BUILDING.md 构建该工具链：" >&2
   echo "  git clone --branch release-branch.go1.24 https://gitcode.com/openharmony-sig/ohos_golang_go.git" >&2
   echo "  cd ohos_golang_go/src && GOROOT_BOOTSTRAP=/usr/local/go GOTOOLCHAIN=local ./make.bash" >&2
   exit 1
@@ -109,7 +70,7 @@ export CGO_CFLAGS="${CGO_CFLAGS:-} -ftls-model=global-dynamic"
 # ⚠️ 不能加 netgo：openharmony 的 net 端口需要 cgo，加了会报 _C_getifaddrs undefined。
 GO_TAGS="${GO_TAGS:-}"
 
-# R1 freeze: legacy SOCKS exports + CGoHello warmup. Do not mix CGoInvoke this round.
+# Pinned SOCKS ABI with CGoHello warmup; upgrades must update the native bridge.
 cat > "${EXPORTS_FILE}" <<'MAP'
 {
   global:
@@ -124,18 +85,9 @@ cat > "${EXPORTS_FILE}" <<'MAP'
 MAP
 
 # ── 取 libXray 源码 ───────────────────────────────────────────────────────────────
-if [[ -n "${LIBXRAY_SRC:-}" ]]; then
-  cp -R "${LIBXRAY_SRC}" "${SRC_DIR}"
-else
-  # 需 checkout 历史提交 ${LIBXRAY_PIN}，浅克隆默认只有 HEAD，故全量 clone 再 checkout。
-  git clone "${LIBXRAY_REPO}" "${SRC_DIR}"
-  git -C "${SRC_DIR}" checkout "${LIBXRAY_PIN}"
-fi
-if [[ -d "${SRC_DIR}/.git" ]]; then
-  git -C "${SRC_DIR}" rev-parse HEAD > "${WORK_DIR}/measured-libxray-commit.txt"
-else
-  echo "untracked-src" > "${WORK_DIR}/measured-libxray-commit.txt"
-fi
+git clone "${LIBXRAY_REPO}" "${SRC_DIR}"
+git -C "${SRC_DIR}" checkout "${LIBXRAY_PIN}"
+git -C "${SRC_DIR}" rev-parse HEAD > "${WORK_DIR}/measured-libxray-commit.txt"
 PATCH_FILE="${ROOT_DIR}/native/patches/libxray-cgohello.patch"
 if [[ -f "${PATCH_FILE}" ]]; then
   shasum -a 256 "${PATCH_FILE}" | awk '{print $1}' > "${WORK_DIR}/measured-patch-sha256.txt"
@@ -284,7 +236,7 @@ XRAY_BUILD_PKG="."
 
 # ── gvisor fdbased Fstat 补丁（尽力而为）────────────────────────────────────────────
 # gvisor 的 fdbased 端点用 unix.Fstat 判断 dispatcher，而 HarmonyOS 的 VPN fd 会拒 Fstat
-# （readv/writev 正常）。现役 libxray 是“SOCKS 版”（数据面走 tun2socks，不再用核心自带的
+# （readv/writev 正常）。现役 libxray 是“SOCKS 版”（数据面走 HEV，不再用核心自带的
 # TUN 入站），通常不命中此处；但钉死的旧版若仍引用，则需此补丁。故改为尽力而为：补丁不中
 # 只告警、不中断。
 GVISOR_MODULE_VERSION="$(go list -m -f '{{.Version}}' gvisor.dev/gvisor 2>/dev/null || true)"
@@ -404,7 +356,7 @@ if strings "${STAGED_SO}" | grep -E '/tmp/xray-ohos|/path/to/user/go' >/dev/null
   exit 1
 fi
 echo "STAGED_LIBXRAY=${STAGED_SO}"
-echo "Built staged ${STAGED_SO} (GOOS=openharmony); r1-build publishes after full verification"
+echo "Built staged ${STAGED_SO} (GOOS=openharmony); build.sh publishes after full verification"
 
 # ── 把内置 Xray 核版本号戳进 CoreInfo.ets ───────────────────────────────────────────
 # About 页直接显示这个常量，而不在运行时调原生 CGoXrayVersion()。该常量从所锁定的

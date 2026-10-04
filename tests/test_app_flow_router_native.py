@@ -2,6 +2,7 @@
 """Compile and execute app_flow_router.cpp against a host-only N-API stub."""
 from __future__ import annotations
 
+import resource
 import shutil
 import subprocess
 import tempfile
@@ -24,7 +25,16 @@ class AppFlowRouterNativeTest(unittest.TestCase):
                 str(ROOT / "tests/app_flow_router_native_test.cpp"),
                 "-o", str(executable),
             ], check=True)
-            subprocess.run([str(executable)], check=True, timeout=10)
+            # 128 simultaneous requests use two descriptors each, in addition to
+            # stdin/stdout/stderr. macOS shells may default to a soft limit of 256.
+            def allow_capacity_test() -> None:
+                soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+                target = max(soft, 512)
+                if hard != resource.RLIM_INFINITY:
+                    target = min(target, hard)
+                resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+            subprocess.run([str(executable)], check=True, timeout=10,
+                           preexec_fn=allow_capacity_test)
 
 
 if __name__ == "__main__":

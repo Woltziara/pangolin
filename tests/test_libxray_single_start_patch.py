@@ -3,6 +3,7 @@ from pathlib import Path
 import importlib.util
 import shutil
 import tempfile
+import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests/fixtures/libxray-xray.go-20d70a98"
@@ -37,5 +38,10 @@ def main() -> None:
     print("ok - libxray-single-start.py rewrites pinned 20d70a98 xray.go")
 
 
+class LibXrayPatchTest(unittest.TestCase):
+    def test_rewrites_pinned_source(self):
+        main()
+
+
 if __name__ == "__main__":
-    main()
+    unittest.main()

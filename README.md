@@ -2,7 +2,7 @@
 
 HarmonyOS NEXT 原生网络隧道客户端，使用 ArkTS、VPN Extension、C++ N-API 桥和 Xray / HEV 数据面。节点与订阅由使用者自行提供。
 
-本次开源的是 `0.4.9-advanced` 当前工作源码。项目处于开发阶段；源码中的功能、离线测试通过和真机可用性是不同的状态，尚未验证全部设备与系统版本。
+本次开源的是 `0.4.10` 当前工作源码。项目处于开发阶段；源码中的功能、离线测试通过和真机可用性是不同的状态，尚未验证全部设备与系统版本。
 
 ## 功能
 
@@ -26,7 +26,7 @@ cd pangolin
 仓库发布源码，不携带预编译内核、签名安装包、节点配置、Geo 数据库或开发者签名。请先按 [构建说明](docs/BUILDING.md) 准备 Go 工具链，再运行：
 
 ```sh
-bash scripts/build-public.sh
+bash scripts/build.sh
 ```
 
 该命令从锁定的上游版本重建两个内核、恢复校验过的 Geo 数据文件并生成**未签名 HAP**，不会连接或操作手机。DevEco Studio 安装到设备时，需自行配置本地签名和设备授权。签名、节点与订阅资料只保存在本机，禁止提交。
@@ -34,14 +34,12 @@ bash scripts/build-public.sh
 ## 离线验证
 
 ```sh
-cd tests/node-runner
-npm ci
-npm test
-cd ../..
-python3 -m unittest discover -s tests -p 'test_*.py'
+bash scripts/test.sh
 ```
 
-Node 测试覆盖解析、规则、连接策略、取消连接、日志、诊断与数据管理。Python 测试包含构建脚本、转发状态机和本机 C/C++ 测试；部分原始断言依赖开发环境、Geo 或预编译内核，缺少这些依赖时需先准备相应材料。完整 Python 测试当前存在失败，具体结果见 [验证记录](docs/VALIDATION.md)。离线验证不会证明实际 VPN 出口或手机后台稳定性。
+测试入口运行全部 Node 测试文件，再运行 Python 原生/构建检查。Node 测试直接加载 ArkTS 源码，覆盖解析、规则、连接取消、HUKS、日志和诊断；C/C++ 测试执行真实生命周期、socket 持有释放、App 流路由和 HEV 诊断代码。
+
+需要已构建 HAP 或已打补丁 HEV 源码的检查，会在缺少相应输入时明确跳过。完整验证时设置 `PANGOLIN_HAP`、`HEV_WORK_DIR`，详见 [验证记录](docs/VALIDATION.md)。离线通过不代表手机上的实际出口、后台稳定性或 App 身份查询权限已经通过验收。
 
 ## 目录
 
@@ -54,7 +52,7 @@ Node 测试覆盖解析、规则、连接策略、取消连接、日志、诊断
 | `scripts/` | 公开构建入口、内核重建与开发验证工具 |
 | `tests/` | 离线测试和合成测试样例 |
 
-`scripts/r1-build.sh`、签名工具和 `stage1-*` 保留为历史开发工具，不是公开构建入口。它们仍依赖本地开发材料；历史工具不含实际设备目标；使用时须配置自己的目标、环境和本地材料。`device.sh` 与 `r1-build.sh` 要求显式设置 `TONGDAO_SERIAL`。
+日常入口只有 `scripts/build.sh` 和 `scripts/test.sh`。旧多内核适配、分阶段验收工具和个人签名流程已从当前源码移除，历史版本可在 Git 中追溯。重构范围与测试承接关系见 [维护说明](docs/MAINTENANCE.md)。
 
 ## 隐私与安全
 

@@ -1,27 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-# 交叉编译 hev-socks5-tunnel（C）为 HarmonyOS 的 libhevsocks5tun.so。
-#
-# 这是「使用 Hev TUN 引擎」开关打开时走的高性能数据面，对照默认的 gvisor/xjasonlyu
-# 引擎（libheytun2socks.so，见 build_tun2socks_ohos.sh）。两者都干同一件事：读 Harmony
-# VPN 的 TUN fd → 转发进内核的本地 SOCKS 入站（127.0.0.1:VPN_DATA_SOCKS_PORT）；只是
-# 实现不同：hev 是纯 C 协程栈（hev-task-system + 内置 yaml），更轻更快。
-#
-# ✅ 与三个 Go 库不同：hev 是 **纯 C**，不碰 Go-on-musl 的 TLS 墙
-#    （docs/harmonyos-go-tls-wall.md），用 DevEco 的 OHOS clang 直接交叉编译即可，
-#    不需要 OHOS Go fork。
-#
-#    若无 OHOS NDK，改脚本后无法本机验证编译；请在装好 DevEco 的机器实跑，
-#    并按 docs/building-native-cores.md §4 校验产物：
-#      nm -D libhevsocks5tun.so | grep hev_socks5_tunnel
-#    应见既有入口以及本次逐流路由 callback setter。
-#    若 hev 上游改了符号名或 yaml 字段，需同步改 napi_init.cpp 与 HevTunConfig.ets。
-
-if [[ "${TONGDAO_NATIVE_BUILD:-0}" != "1" && "${TONGDAO_R1_PUBLISH:-0}" != "1" ]]; then
-  echo "ERROR: native hev builder is not a publish entry. Use scripts/r1-build.sh REBUILD_HEV=1" >&2
+# Internal pinned-core builder; use scripts/build.sh.
+if [[ "${TONGDAO_NATIVE_BUILD:-0}" != "1" ]]; then
+  echo "Use scripts/build.sh to prepare the pinned toolchain and source revisions." >&2
   exit 2
 fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SDK_HOME="${DEVECO_SDK_HOME:-/Applications/DevEco-Studio.app/Contents/sdk}"
 OHOS_NATIVE_HOME="${OHOS_NATIVE_HOME:-${SDK_HOME}/default/openharmony/native}"
@@ -31,7 +15,7 @@ RANLIB_BIN="${OHOS_NATIVE_HOME}/llvm/bin/llvm-ranlib"
 SYSROOT="${OHOS_NATIVE_HOME}/sysroot"
 WORK_DIR="${HEV_WORK_DIR:-}"
 if [[ -z "${WORK_DIR}" ]]; then
-  echo "ERROR: HEV_WORK_DIR must be set to an isolated workdir (r1-build provides one). Refusing to use the project .git" >&2
+  echo "ERROR: HEV_WORK_DIR must be set to an isolated workdir (build.sh provides one). Refusing to use the project .git" >&2
   exit 2
 fi
 if [[ "$WORK_DIR" == "$ROOT_DIR" || "$WORK_DIR" == "$ROOT_DIR"/*/.git* ]]; then
@@ -41,7 +25,7 @@ fi
 STAGE_DIR="${HEV_STAGE_DIR:-${WORK_DIR}/stage}"
 PREBUILT_DIR="${ROOT_DIR}/entry/src/main/cpp/prebuilt"
 if [[ "$STAGE_DIR" == "$PREBUILT_DIR" || "$STAGE_DIR" == "$PREBUILT_DIR"/* ]]; then
-  echo "ERROR: HEV_STAGE_DIR must not be the shared prebuilt tree; r1-build publishes the staged artifact" >&2
+  echo "ERROR: HEV_STAGE_DIR must not be the shared prebuilt tree; build.sh publishes the staged artifact" >&2
   exit 2
 fi
 
@@ -132,7 +116,7 @@ COMMON_FLAGS="--target=aarch64-linux-ohos --sysroot=${SYSROOT} -fPIC -O2${PATCH_
 make clean >/dev/null 2>&1 || true
 # `make static` 产出 bin/libhev-socks5-tunnel.a（库目标，含 hev_socks5_tunnel_* 公共 API）。
 # 用 OHOS 的 llvm-ar/llvm-ranlib 打包，避免 macOS 宿主 ranlib 处理交叉 .a 报「空 TOC」警告。
-make -j"$(sysctl -n hw.ncpu 2>/dev/null || echo 4)" \
+make -j"${BUILD_JOBS:-4}" \
   CC="${CC_BIN}" \
   AR="${AR_BIN}" \
   RANLIB="${RANLIB_BIN}" \

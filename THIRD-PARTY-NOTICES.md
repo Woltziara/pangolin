@@ -6,7 +6,7 @@
 
 - 上游：https://github.com/popsiclelmlm/Hey
 - 原始参考基线：v1.3.4。
-- 使用/改编：N-API 原生桥、VPN 生命周期、tun2socks 适配器、分享链接及订阅解析器、OpenHarmony 交叉编译实现。
+- 使用/改编：N-API 原生桥、VPN 生命周期、分享链接及订阅解析器、OpenHarmony 交叉编译实现。
 - 移植文件包括 `entry/src/main/ets/core/ShareLinkParser.ets`、`Encoding.ets`、`IdnUrl.ets`、`NodeDedupe.ets`、`SubscriptionParser.ets` 和 `entry/src/main/ets/services/SubscriptionManager.ets`。
 - 解析器文件中的原有作者注释保留；本项目对去重、KCP、订阅和路由行为进行了修改。
 - 原生构建与转发以本仓库 `native/CORE_LOCK.json`、补丁和 `docs/BUILDING.md` 为准。
@@ -29,11 +29,6 @@
 - 当前版本：`2.17.1`，提交前缀 `9a06bc6`。
 - 补丁包括事件等待、UDP 计数、逐流路由和 TUN 进度。
 - 构建时按上游版本获取子模块；各子模块沿用其许可证。
-
-## tun2socks — MIT
-
-- 上游：https://github.com/xjasonlyu/tun2socks
-- 保留适配器和历史构建代码作为参考；不随本仓库发布其二进制，生产 HAP 使用 HEV。
 
 ## OpenHarmony Go toolchain
 

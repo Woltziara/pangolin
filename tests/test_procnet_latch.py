@@ -9,6 +9,7 @@ TunnelVpnAbility.mergeTunCounters.
 from __future__ import annotations
 
 import re
+import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -50,3 +51,10 @@ def test_native_fallback_still_wired():
     src = read(VPN)
     assert "readVpnTunCounters()" in src
     assert "getNativeStats()" in src
+
+
+def load_tests(loader, suite, pattern):
+    for name, function in sorted(globals().items()):
+        if name.startswith('test_') and callable(function):
+            suite.addTest(unittest.FunctionTestCase(function))
+    return suite

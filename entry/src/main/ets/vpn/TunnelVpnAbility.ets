@@ -45,7 +45,7 @@ import {
   setProtectCallback,
   startNativeHevTun,
   startNativeXray,
-  stopNativeTun2Socks,
+  stopNativeHevTun,
   stopNativeXray,
   stopNativeXrayOwned
 } from '../native/TunnelNative';
@@ -941,7 +941,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
 
       // Start forwarding immediately. A separate node-port probe neither
       // proves Internet access nor gates this session; canaries run below.
-      const preHev = stopNativeTun2Socks();
+      const preHev = stopNativeHevTun();
       if (!preHev.ok && preHev.message.indexOf('already stopped') < 0) {
         throw new Error(`无法停下旧 HEV：${preHev.message}`);
       }
@@ -1532,7 +1532,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       }
       this.coreRestarts += 1;
       this.appRoutes?.stop();
-      const stopForwarder = stopNativeTun2Socks();
+      const stopForwarder = stopNativeHevTun();
       if (!stopForwarder.ok) {
         this.fail('停止 HEV 失败', stopForwarder.message);
         this.requestCleanup('recover hev stop failed', gen);
@@ -1614,7 +1614,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
       }
       if (this.staleRecover(gen, rev)) {
         hilog.warn(LOG_DOMAIN, LOG_TAG, 'recover cancelled after hev');
-        stopNativeTun2Socks();
+        stopNativeHevTun();
         this.stopStartedXray(coreResult);
         this.requestCleanup('recover stale after hev', gen);
         return;
@@ -1721,7 +1721,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
     let stopCoreOk = false;
     let poisoned = false;
     try {
-      const stopForwarder = stopNativeTun2Socks();
+      const stopForwarder = stopNativeHevTun();
       stopForwarderOk = stopForwarder.ok;
       poisoned = poisoned || stopForwarder.poisoned;
       if (!stopForwarder.ok) {

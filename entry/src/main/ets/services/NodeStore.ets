@@ -1,7 +1,7 @@
 // 穿山 (GPL-3.0) — 节点持久化（nodes.json 的唯一写入方）。
 // 向后兼容契约：NodeCatalog.parseNodeCatalog 读取 name/region/server/port/protocol/outbound
 // 以及测速证据 latencyMs/latencyAt/latencyText；其余未知键忽略。v2 写出必须始终填充
-// 目录六键（见本文件尾部 SCHEMA 注释与 tests/test_import_layer.py）。
+// 目录六键（见本文件尾部 SCHEMA 注释与 tests/node-runner/redteam-fixes.test.mjs）。
 import { common } from '@kit.AbilityKit';
 import { dedupeKeyOfNode } from '../core/NodeDedupe';
 import { formatOutboundJsonToShareLink, ParsedNode } from '../core/ShareLinkParser';

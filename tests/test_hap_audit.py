@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import unittest
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-HAP = ROOT / "entry/build/default/outputs/default/entry-default-signed.hap"
+HAP = Path(os.environ.get("PANGOLIN_HAP", str(ROOT / "entry/build/default/outputs/default/entry-default-unsigned.hap")))
 NOTICE = ROOT / "THIRD-PARTY-NOTICES.md"
 LICENSE = ROOT / "LICENSE"
 
@@ -21,9 +22,9 @@ class HapAuditTest(unittest.TestCase):
         self.assertIn("hev-socks5-tunnel", text)
         self.assertIn("GPL-3.0", text)
 
-    def test_signed_hap_has_no_secrets_or_experiment_libs(self) -> None:
+    def test_hap_has_no_secrets_or_experiment_libs(self) -> None:
         if not HAP.is_file():
-            self.skipTest("signed hap not built yet")
+            self.skipTest("HAP not built; run scripts/build.sh or set PANGOLIN_HAP")
         names: list[str] = []
         with zipfile.ZipFile(HAP) as zf:
             names = zf.namelist()

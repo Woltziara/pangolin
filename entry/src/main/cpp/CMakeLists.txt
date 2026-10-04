@@ -18,7 +18,7 @@ target_link_libraries(heyvpn PUBLIC
     libdl.so)
 
 # Production HAP only ships the R1 cores: libxray.so + libhevsocks5tun.so.
-# Unused prebuilts stay on disk for evidence but are not packaged.
+# Missing cores are a configuration error, never a silently incomplete HAP.
 add_custom_target(copy_prebuilt_libs ALL)
 add_dependencies(copy_prebuilt_libs heyvpn)
 foreach(PREBUILT_LIB libxray.so libhevsocks5tun.so)
@@ -27,5 +27,7 @@ foreach(PREBUILT_LIB libxray.so libhevsocks5tun.so)
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${HEYVPN_PREBUILT_DIR}/${PREBUILT_LIB}"
             "$<TARGET_FILE_DIR:heyvpn>/${PREBUILT_LIB}")
+    else()
+        message(FATAL_ERROR "Missing ${PREBUILT_LIB}. Run scripts/build.sh first.")
     endif()
 endforeach()

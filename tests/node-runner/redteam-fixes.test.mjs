@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import vm from 'node:vm';
 import ts from 'typescript';
@@ -692,7 +694,7 @@ function loadVpnAbility(opts = {}) {
       },
       stopNativeXray() { nativeStops.global += 1; return { ok: true, message: 'stopped' }; },
       stopNativeXrayOwned(seq) { nativeStops.owned.push(seq); return { ok: true, message: 'owned-stop', ownerSeq: seq }; },
-      stopNativeTun2Socks() { return { ok: true, message: 'stopped' }; },
+      stopNativeHevTun() { return { ok: true, message: 'stopped' }; },
       startNativeHevTun() { return { ok: opts.hevOk !== false, message: opts.hevOk === false ? 'hev' : 'started' }; },
       setProtectCallback() { return 1; },
       clearProtectCallback() { return 0; },
@@ -816,7 +818,7 @@ test('recover failure after failover trial restores previous commit', async () =
     '@kit.ArkTS': {},
     '../net/DataplaneStatus': statusMod,
     '../core/XrayRuntime': { SocksSession: class { constructor() { this.host = '127.0.0.1'; this.port = 1; this.user = 'u'; this.pass = 'p'; } }, newSocksSession() { return new (class { constructor() { this.host = '127.0.0.1'; this.port = 2; this.user = 'u'; this.pass = 'p'; } })(); }, buildRuntimeXrayConfig() { return '{}'; }, NODE_META_FILE: 'node-meta.json', parseNodeMeta() { return { name: 'A', region: '' }; } },
-    '../native/TunnelNative': { getNativeStats() { return { xrayRunning: false, xrayStarting: false, tunRunning: false }; }, startNativeXray() { return { ok: false, message: 'core fail' }; }, stopNativeXray() { return { ok: true, message: 'stopped' }; }, stopNativeTun2Socks() { return { ok: true, message: 'stopped' }; }, startNativeHevTun() { return { ok: false, message: 'hev' }; } },
+    '../native/TunnelNative': { getNativeStats() { return { xrayRunning: false, xrayStarting: false, tunRunning: false }; }, startNativeXray() { return { ok: false, message: 'core fail' }; }, stopNativeXray() { return { ok: true, message: 'stopped' }; }, stopNativeHevTun() { return { ok: true, message: 'stopped' }; }, startNativeHevTun() { return { ok: false, message: 'hev' }; } },
     '../net/DataplaneCanary': { async socksHttpCanary() { return { ok: false, elapsedMs: 1, message: '' }; }, async tcpConnectCanary() { return { ok: false, elapsedMs: 1, message: '' }; } },
     './VpnConstants': { MODE_FULL: 'full', VPN_COMMAND_KEY: 'command', VPN_GENERATION_KEY: 'generation', VPN_MODE_KEY: 'mode' },
     '../services/AppliedPolicy': { AppliedPolicy: { record() {}, noteRunning() {} } },
@@ -1153,7 +1155,7 @@ test('build recipe uses relative xray replace and close-once hold', () => {
   const finishFn = native.split('void FinishXrayStartJob(')[1].split('void* XrayStartWorker(')[0];
   assert.match(finishFn, /XrayFinishStartedJob/);
   assert.match(finishFn, /RequestOwnedCoreStop/);
-  const workerFn = native.split('void* XrayStartWorker(')[1].split('bool WaitLocalTcp(')[0];
+  const workerFn = native.split('void* XrayStartWorker(')[1].split('napi_value StartXray(')[0];
   assert.doesNotMatch(workerFn, /StopStartedXrayLocked/);
   assert.match(workerFn, /FinishXrayStartJob\(job, true/);
   const stopOwnedFn = native.split('napi_value StopXrayOwned(')[1].split('napi_value StopXray(')[0];
@@ -1180,9 +1182,12 @@ test('build recipe uses relative xray replace and close-once hold', () => {
   assert.doesNotMatch(native, /inject file consumed/);
   assert.match(vpnSrc, /ignore duplicate start command/);
   const lifeSrc = fileURLToPath(new URL('../../entry/src/main/cpp/xray_start_lifecycle.cpp', import.meta.url));
-  const fateBin = '/tmp/tongdao-xray-fate';
-  execFileSync('c++', ['-std=c++17', '-pthread', '-o', fateBin, fateSrc, lifeSrc]);
-  execFileSync(fateBin);
+  const fateDir = mkdtempSync(join(tmpdir(), 'pangolin-xray-fate-'));
+  const fateBin = join(fateDir, 'test');
+  try {
+    execFileSync('c++', ['-std=c++17', '-pthread', '-o', fateBin, fateSrc, lifeSrc]);
+    execFileSync(fateBin);
+  } finally { rmSync(fateDir, { recursive: true, force: true }); }
 });
 
 await Promise.all(pending);

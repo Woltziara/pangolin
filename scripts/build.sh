@@ -1,4 +1,84 @@
-#!/bin/zsh
-print -u2 -- "scripts/build.sh retired."
-print -u2 -- "Use scripts/r1-build.sh (package.lock). device.sh build is disabled."
-exit 2
+#!/usr/bin/env bash
+# Build an unsigned public-source HAP. Never signs, installs or contacts devices.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+NATIVE_ONLY=0
+USE_LOCKED_CORES=0
+for option in "$@"; do
+  case "$option" in
+    --help|-h)
+      echo "Usage: bash scripts/build.sh [--native-only] [--use-locked-cores]"
+      echo "Default: rebuild pinned cores, restore Geo data and assemble unsigned HAP."
+      echo "--use-locked-cores: reuse local cores only if their SHA-256 matches CORE_LOCK."
+      exit 0 ;;
+    --native-only) NATIVE_ONLY=1 ;;
+    --use-locked-cores) USE_LOCKED_CORES=1 ;;
+    *) echo "Unknown argument: $option" >&2; exit 2 ;;
+  esac
+done
+
+DEVECO_STUDIO_HOME="${DEVECO_STUDIO_HOME:-/Applications/DevEco-Studio.app}"
+export DEVECO_SDK_HOME="${DEVECO_SDK_HOME:-$DEVECO_STUDIO_HOME/Contents/sdk}"
+export OHOS_NATIVE_HOME="${OHOS_NATIVE_HOME:-$DEVECO_SDK_HOME/default/openharmony/native}"
+export HOS_SDK_HOME="$DEVECO_SDK_HOME"
+export JAVA_HOME="${JAVA_HOME:-$DEVECO_STUDIO_HOME/Contents/jbr/Contents/Home}"
+export PATH="$JAVA_HOME/bin:$DEVECO_STUDIO_HOME/Contents/tools/node/bin:$DEVECO_STUDIO_HOME/Contents/tools/ohpm/bin:$DEVECO_STUDIO_HOME/Contents/tools/hvigor/bin:$PATH"
+export OHOS_GO_FORK="${OHOS_GO_FORK:-$ROOT/.runtime/native-build/ohos_golang_go}"
+LOCK="$ROOT/native/CORE_LOCK.json"
+lock_value() {
+  python3 - "$LOCK" "$1" "$2" <<'PY'
+import json, sys
+with open(sys.argv[1]) as stream:
+    value = json.load(stream)[sys.argv[2]][sys.argv[3]]
+print(value)
+PY
+}
+export LIBXRAY_REPO="$(lock_value libxray repo)"
+export LIBXRAY_PIN="$(lock_value libxray commit)"
+export OHOS_GO_COMMIT="$(lock_value go commit)"
+export HEV_REPO="$(lock_value hev repo)"
+export HEV_PIN="$(lock_value hev commit)"
+if [[ "$USE_LOCKED_CORES" == "1" ]]; then
+  python3 - "$ROOT" "$LOCK" <<'PYCORE'
+import hashlib, json, sys
+from pathlib import Path
+root = Path(sys.argv[1])
+lock = json.loads(Path(sys.argv[2]).read_text())
+for name in ("libxray", "hev"):
+    item = lock[name]
+    path = root / item["artifact"]
+    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != item["sha256"]:
+        raise SystemExit(f"{name}: missing or unverified core; rebuild without --use-locked-cores")
+print("Pinned native core hashes verified")
+PYCORE
+else
+  if [[ ! -x "$OHOS_GO_FORK/bin/go" ]]; then
+    echo "Missing OpenHarmony Go toolchain. Follow docs/BUILDING.md first." >&2
+    exit 1
+  fi
+  if [[ ! -x "$OHOS_NATIVE_HOME/llvm/bin/aarch64-unknown-linux-ohos-clang" ]]; then
+    echo "Missing OpenHarmony native SDK. Check OHOS_NATIVE_HOME." >&2
+    exit 1
+  fi
+  mkdir -p "$ROOT/.runtime/native-build" "$ROOT/entry/src/main/cpp/prebuilt/arm64-v8a"
+  export XRAY_WORK_DIR="$(mktemp -d "$ROOT/.runtime/native-build/xray.XXXXXX")"
+  export HEV_WORK_DIR="$(mktemp -d "$ROOT/.runtime/native-build/hev.XXXXXX")"
+  export HEV_STAGE_DIR="$HEV_WORK_DIR/stage"
+  export TONGDAO_NATIVE_BUILD=1
+  bash "$ROOT/scripts/build_libxray_ohos.sh"
+  bash "$ROOT/scripts/build_hev_ohos.sh"
+  cp "$XRAY_WORK_DIR/libxray.so" "$ROOT/entry/src/main/cpp/prebuilt/arm64-v8a/libxray.so"
+  cp "$HEV_STAGE_DIR/libhevsocks5tun.so" "$ROOT/entry/src/main/cpp/prebuilt/arm64-v8a/libhevsocks5tun.so"
+fi
+python3 "$ROOT/scripts/restore_geo.py"
+if [[ "$NATIVE_ONLY" == "1" ]]; then
+  echo "Native cores and Geo data prepared. No HAP built."
+  exit 0
+fi
+
+cd "$ROOT"
+ohpm install
+hvigorw assembleHap -p product=default -p buildMode=debug --no-daemon
+HAP="$ROOT/entry/build/default/outputs/default/entry-default-unsigned.hap"
+if [[ ! -f "$HAP" ]]; then echo "Expected unsigned HAP missing" >&2; exit 1; fi
+echo "Unsigned HAP: $HAP"
