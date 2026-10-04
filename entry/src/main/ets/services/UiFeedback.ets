@@ -1,3 +1,4 @@
+import { ErrorJournal } from './ErrorJournal';
 import { common } from '@kit.AbilityKit';
 import { publicFailure, redactDiagnosticText } from '../core/UserFacingCopy';
 import { StatusStore } from './StatusStore';
@@ -6,6 +7,7 @@ export const UI_FEEDBACK_FILE: string = 'ui-feedback.json';
 
 export class UiFeedback {
   static failure(context: common.Context | null, operation: string, error: Object, fallback: string): string {
+    ErrorJournal.error(`ui.${operation}`, error);
     const rec = error as Record<string, Object>;
     const message = typeof rec['message'] === 'string' ? rec['message'] as string : '';
     const code = typeof rec['code'] === 'number' ? rec['code'] as number : 0;

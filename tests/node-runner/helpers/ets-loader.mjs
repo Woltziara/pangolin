@@ -20,13 +20,17 @@ export class Clock {
 }
 /** Full production modules; only explicitly named platform/storage boundaries
  * are substituted. There is no alternate implementation of the tested logic. */
-export function makeLoader(mocks={},globals={}) {
+export function makeLoader(mocks={},globals={}, {realLogging=false}={}) {
   const cache=new Map();const root=etsRoot;
   function load(path) {
     const key=path.startsWith(root)?path:resolve(root,path);const file=key.endsWith('.ets')?key:key+'.ets';
     if(cache.has(file))return cache.get(file).exports;
     const rel=file.slice(root.length).replace(/^\//,'');
     if(rel in mocks)return mocks[rel];
+    if(!realLogging && rel==='services/AppLog.ets' && !('@kit.PerformanceAnalysisKit' in mocks)) return {AppLog:{info(){},debug(){},warn(){},error(){},fatal(){}}};
+    // Existing decision fixtures explicitly isolate the persistence collaborator.
+    // error-journal.test.mjs opts in to the production logger and tests its boundaries.
+    if(!realLogging && rel==='services/ErrorJournal.ets')return {ERROR_JOURNAL_FILES:[],ErrorJournal:{start(){},record(){},error(){},read(){return {};}}};
     const source=readFileSync(file,'utf8');
     const result=ts.transpileModule(source,{reportDiagnostics:true,compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}});
     const syntax=(result.diagnostics||[]).filter(d=>d.category===ts.DiagnosticCategory.Error);

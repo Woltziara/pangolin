@@ -1,3 +1,4 @@
+import { AppLog as hilog } from './AppLog';
 import { systemBootId, monotonicMillis } from '../native/TunnelNative';
 import { PlatformOperations } from './PlatformOperations';
 import { OwnerExitRecovery } from './OwnerExitRecovery';
@@ -13,7 +14,6 @@ import { common, appManager } from '@kit.AbilityKit';
 import { CONNECTION_POLICY } from './ConnectionPolicy';
 import { BusinessError } from '@kit.BasicServicesKit';
 import { connection, vpnExtension } from '@kit.NetworkKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   DataplaneStatus, PHASE_CANARY_OK, PHASE_ERROR, PHASE_STARTING,
   PHASE_PROBE_SNIFFING, PHASE_STOPPED

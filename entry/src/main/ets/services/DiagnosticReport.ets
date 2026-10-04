@@ -1,3 +1,5 @@
+import { AppLog } from './AppLog';
+import { ErrorJournal } from './ErrorJournal';
 import { BuildIdentity } from './BuildIdentity';
 import { SystemExitEvidence } from './SystemExitEvidence';
 import { LAYERS_FILE, BUSINESS_FILE, safeLayerRecord, businessObservation } from '../net/LayerEvidence';
@@ -40,7 +42,7 @@ export class DiagnosticReport {
         return info.versionName;
       }
     } catch (error) {
-      console.error(`appVersion failed ${JSON.stringify(error)}`);
+      AppLog.error(0x3200, 'DiagnosticReport', '%{public}s', `appVersion failed ${JSON.stringify(error)}`);
     }
     return FALLBACK_APP_VERSION;
   }
@@ -109,6 +111,7 @@ export class DiagnosticReport {
     };
     doc['snapshotFreshness'] = freshness;
     doc['runtimeJournal'] = RuntimeJournal.read(context);
+    doc['errorJournal'] = ErrorJournal.read(context);
     doc['systemExitEvents'] = SystemExitEvidence.read(context);
     doc['layerEvidence'] = safeLayerRecord(StatusStore.readText(context, LAYERS_FILE));
     doc['targetBusiness'] = businessObservation(StatusStore.readText(context, BUSINESS_FILE), status.generation,
@@ -128,7 +131,7 @@ export class DiagnosticReport {
       '仅记录穿山甲自身可见的运行元数据；不是微信或其他应用的内部日志。',
       '不记录聊天、请求正文、访问域名/IP、账号、密码或订阅地址；不解密流量。',
       'App 分流关闭时没有逐 App 结果；聚合正常不能证明某个 App 正常，也不能排除某条连接失败。',
-      '滚动记录最多保留 48 小时且受 4 MiB 容量限制，满后提前淘汰；休眠或进程未运行时可能有时间缺口。',
+      '运行指标最多保留 48 小时 / 4 MiB；错误日志独立保留 32 MiB，容量满后轮换。休眠或进程未运行时可能有缺口。',
       '日志只覆盖功能启用后的实际记录，无法补回此前故障。'
     ];
     const uiFeedback = StatusStore.readText(context, UI_FEEDBACK_FILE);

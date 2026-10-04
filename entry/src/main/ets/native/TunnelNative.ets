@@ -74,3 +74,6 @@ export function systemBootId(): string { return heyNative.systemBootId(); }
 
 export function acquireUserDataLease(path: string): number { return heyNative.acquireUserDataLease(path); }
 export function releaseUserDataLease(token: number): boolean { return heyNative.releaseUserDataLease(token); }
+
+export function configureErrorLog(directory: string): void { heyNative.configureErrorLog(directory); }
+export function recordErrorLog(level: string, component: string, message: string, stack: string): void { heyNative.recordErrorLog(level, component, message, stack); }

@@ -75,3 +75,6 @@ export const systemBootId: () => string;
 
 export const acquireUserDataLease: (path: string) => number;
 export const releaseUserDataLease: (token: number) => boolean;
+
+export const configureErrorLog: (directory: string) => void;
+export const recordErrorLog: (level: string, component: string, message: string, stack: string) => void;

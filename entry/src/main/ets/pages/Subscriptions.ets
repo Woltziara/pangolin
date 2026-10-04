@@ -1,3 +1,4 @@
+import { AppLog } from '../services/AppLog';
 import { publicFailure } from '../core/UserFacingCopy';
 import { UiFeedback } from '../services/UiFeedback';
 import { NativePage } from '../components/NativePage';
@@ -127,7 +128,7 @@ struct Subscriptions {
     }
     // Phase D：订阅增删/开关/间隔变化后重排 WorkScheduler 后台任务。
     SubscriptionScheduler.reschedule(ctx).catch((error: Object) => {
-      console.error(`reschedule failed ${JSON.stringify(error)}`);
+      AppLog.error(0x3200, 'Subscriptions', '%{public}s', `reschedule failed ${JSON.stringify(error)}`);
     });
   }
 

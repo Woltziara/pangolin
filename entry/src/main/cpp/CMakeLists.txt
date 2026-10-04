@@ -11,7 +11,7 @@ endif()
 
 set(HEYVPN_PREBUILT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/prebuilt/arm64-v8a)
 
-add_library(heyvpn SHARED napi_init.cpp xray_start_lifecycle.cpp app_flow_router.cpp)
+add_library(heyvpn SHARED napi_init.cpp xray_start_lifecycle.cpp app_flow_router.cpp local_error_log.cpp)
 set_target_properties(heyvpn PROPERTIES C_VISIBILITY_PRESET default CXX_VISIBILITY_PRESET default)
 target_include_directories(heyvpn PRIVATE "${HEYVPN_PREBUILT_DIR}" "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(heyvpn PUBLIC

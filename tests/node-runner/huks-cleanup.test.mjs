@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import vm from 'node:vm';
 import ts from 'typescript';
+import {legacyBoundary} from './helpers/legacy-boundaries.mjs';
 function loadEts(rel){
   const source=readFileSync(new URL('../../entry/src/main/ets/'+rel,import.meta.url),'utf8');
   const module={exports:{}};
@@ -24,7 +25,7 @@ const deps={'@kit.AbilityKit':{common:{}},'@kit.ArkTS':{util:{TextEncoder:class 
  './StatusStore':{OUTBOUND_FILE:'outbound.json',StatusStore:{listNamesStrict:()=>[],removeFile(){removed=true;},readText(){return '';},writeText(){}}}};
 const module={exports:{}};
 vm.runInNewContext(ts.transpileModule(source,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2020}}).outputText,
- {module,exports:module.exports,require(n){if(!(n in deps))throw Error(n);return deps[n];}});
+ {module,exports:module.exports,require(n){if(n in deps)return deps[n];const boundary=legacyBoundary(n);if(boundary)return boundary;throw Error(n);}});
 const H=module.exports.HuksSecretStore;
 await H.removeProtected({});assert(removed);
 await H.ensureKey();assert.equal(generated,1);
@@ -97,7 +98,7 @@ function loadProtect(failAt) {
   };
   const module2 = { exports: {} };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText,
-    { module: module2, exports: module2.exports, require(n) { if (!(n in deps2)) throw Error(n); return deps2[n]; } });
+    { module: module2, exports: module2.exports, require(n) { if(n in deps2)return deps2[n];const boundary=legacyBoundary(n);if(boundary)return boundary;throw Error(n); } });
   return { H: module2.exports.HuksSecretStore, data, aPlain };
 }
 for (const failAt of [oc.META_FILE, oc.COMMIT_FILE, 'remove:' + oc.OUTBOUND_PLAIN_FILE, 'remove:' + oc.META_STAGING_FILE]) {
@@ -159,7 +160,7 @@ console.log('PASS actual HUKS protectOutbound: write-point failures restore prev
   };
   const module2 = { exports: {} };
   vm.runInNewContext(ts.transpileModule(source, { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 } }).outputText,
-    { module: module2, exports: module2.exports, require(n) { if (!(n in deps2)) throw Error(n); return deps2[n]; } });
+    { module: module2, exports: module2.exports, require(n) { if(n in deps2)return deps2[n];const boundary=legacyBoundary(n);if(boundary)return boundary;throw Error(n); } });
   const HP = module2.exports.HuksSecretStore;
   await HP.protectOutbound({});
   assert.equal(await HP.readOutbound({}), bPlain);

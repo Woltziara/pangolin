@@ -1,3 +1,4 @@
+import { AppLog } from './AppLog';
 import { LIFECYCLE_GATE } from './LifecycleGate';
 import { CONTROL_FILE, OWNER_TERMINAL_FILE, controlBlocksStart, terminalProven } from '../net/OwnerTerminal';
 import { PLATFORM_OPERATIONS_FILE } from './PlatformOperations';
@@ -15,6 +16,7 @@ import { OUTBOUND_FILE, StatusStore } from './StatusStore';
 import { SubscriptionStore } from './SubscriptionStore';
 import { USER_RULES_FILE } from './UserRuleStore';
 import { JOURNAL_FILES } from './RuntimeJournal';
+import { ERROR_JOURNAL_FILES } from './ErrorJournal';
 
 // 清理日志覆盖的 filesDir 文件名：事件账本 + 内核访问日志 + 自证探测记录。
 // 全部是纯文件名（不含目录分隔符），由 assertSafeName 兜底。
@@ -115,7 +117,7 @@ export class DataManagement {
     const result = new ClearLogsResult();
     const reportFiles = StatusStore.listNamesStrict(context).filter((name: string) =>
       /^(diagnostic-report-|incident-report-)\d+\.json$/.test(name));
-    const targets = LOG_FILES.concat(JOURNAL_FILES, ['native-stats.json'], reportFiles);
+    const targets = LOG_FILES.concat(JOURNAL_FILES, ERROR_JOURNAL_FILES, ['native-stats.json'], reportFiles);
     for (let i = 0; i < targets.length; i++) {
       const name = targets[i];
       assertSafeName(name);
@@ -127,7 +129,7 @@ export class DataManagement {
         }
       } catch (error) {
         result.failed += 1;
-        console.error(`clearLogs ${name} failed ${JSON.stringify(error)}`);
+        AppLog.error(0x3200, 'DataManagement', '%{public}s', `clearLogs ${name} failed ${JSON.stringify(error)}`);
       }
     }
     return result;

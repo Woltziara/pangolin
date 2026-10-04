@@ -1,3 +1,4 @@
+import { AppLog } from './AppLog';
 // 穿山 (GPL-3.0) — 用户分流规则持久化（user-rules.json 的唯一读写方，Phase C2 新增）。
 // 向后兼容契约：文件不存在/损坏时 load() 返回空列表，SplitRouter 不带 userRules
 // 字段，规则链与 Phase C2 之前逐字节一致。落盘走 StatusStore.readJsonFile /
@@ -70,7 +71,7 @@ export class UserRuleStore {
       }
       return list;
     } catch (error) {
-      console.error(`UserRuleStore.load parse failed ${JSON.stringify(error)}`);
+      AppLog.error(0x3200, 'UserRuleStore', '%{public}s', `UserRuleStore.load parse failed ${JSON.stringify(error)}`);
       return [];
     }
   }

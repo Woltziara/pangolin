@@ -1,5 +1,6 @@
+import { AppLog as hilog } from './AppLog';
 import { common } from '@kit.AbilityKit';
-import { hiAppEvent, hilog } from '@kit.PerformanceAnalysisKit';
+import { hiAppEvent } from '@kit.PerformanceAnalysisKit';
 import { StatusStore } from './StatusStore';
 
 export const SYSTEM_EXIT_FILE: string = 'system-exit-events.json';

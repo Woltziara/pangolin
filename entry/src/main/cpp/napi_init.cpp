@@ -7,6 +7,7 @@
 #include "app_flow_router.h"
 #include "protect_lease.h"
 #include "atomic_cas.h"
+#include "local_error_log.h"
 
 #include <algorithm>
 #include <atomic>
@@ -107,11 +108,13 @@ void LogInfo(const std::string& message)
 
 void LogWarn(const std::string& message)
 {
+    LocalErrorLog::Append("warn", "native", message);
     OH_LOG_Print(LOG_APP, LOG_WARN, LOG_DOMAIN_ID, LOG_TAG_NAME, "%{public}s", message.c_str());
 }
 
 void LogError(const std::string& message)
 {
+    LocalErrorLog::Append("error", "native", message);
     OH_LOG_Print(LOG_APP, LOG_ERROR, LOG_DOMAIN_ID, LOG_TAG_NAME, "%{public}s", message.c_str());
 }
 
@@ -1917,10 +1920,22 @@ napi_value StopHevTun(napi_env env, napi_callback_info info)
     }
 }
 
+napi_value ConfigureErrorLog(napi_env env,napi_callback_info info) {
+    size_t argc=1;napi_value args[1];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc==1)LocalErrorLog::Configure(GetStringArg(env,args[0]));
+    napi_value out;napi_get_undefined(env,&out);return out;
+}
+napi_value RecordErrorLog(napi_env env,napi_callback_info info) {
+    size_t argc=4;napi_value args[4];napi_get_cb_info(env,info,&argc,args,nullptr,nullptr);
+    if(argc>=3)LocalErrorLog::Append(GetStringArg(env,args[0]),GetStringArg(env,args[1]),GetStringArg(env,args[2]),argc>3?GetStringArg(env,args[3]):"");
+    napi_value out;napi_get_undefined(env,&out);return out;
+}
 static napi_value Init(napi_env env, napi_value exports)
 {
     RegisterAppFlowRouter(env, exports);
     napi_property_descriptor desc[] = {
+        {"configureErrorLog",nullptr,ConfigureErrorLog,nullptr,nullptr,nullptr,napi_default,nullptr},
+        {"recordErrorLog",nullptr,RecordErrorLog,nullptr,nullptr,nullptr,napi_default,nullptr},
         { "createSocksSession", nullptr, CreateSocksSession, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "startXray", nullptr, StartXray, nullptr, nullptr, nullptr, napi_default, nullptr },
         { "stopXray", nullptr, StopXray, nullptr, nullptr, nullptr, napi_default, nullptr },

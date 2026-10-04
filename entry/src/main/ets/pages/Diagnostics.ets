@@ -388,7 +388,7 @@ struct Diagnostics {
               .width('100%').constraintSize({ minHeight: 48 })
               .enabled(!this.exporting && !this.busy)
               .onClick(() => { this.saveIncident(); })
-            Text('自动记录最近的网络变化和流量情况，报告只保存在手机。')
+            Text('自动保留错误和网络变化。错误记录独立保存，报告只保存在手机。')
               .fontSize(12).fontColor($r('sys.color.ohos_id_color_text_secondary'))
             Button(this.showTechnicalDetails ? '收起技术详情' : '查看技术详情')
               .onClick(() => { this.toggleTechnicalDetails(); })

@@ -1,3 +1,4 @@
+import { AppLog as hilog } from './AppLog';
 // 穿山 (GPL-3.0) — 订阅自动更新调度（Phase D 新增）。
 // WorkScheduler 注册/取消写法参考 Hey (GPL-3.0)
 // entry/src/main/ets/services/SubscriptionBackgroundScheduler.ets（startWork 前
@@ -7,7 +8,6 @@
 // 启用且自动更新订阅的最小 intervalHours，并按 WorkScheduler 下限钳制到 ≥2h。
 import { common } from '@kit.AbilityKit';
 import { workScheduler } from '@kit.BackgroundTasksKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BUNDLE_NAME } from '../vpn/VpnConstants';
 import { SettingsStore } from './SettingsStore';
 import { MIN_INTERVAL_HOURS, SubscriptionRecord, SubscriptionStore } from './SubscriptionStore';

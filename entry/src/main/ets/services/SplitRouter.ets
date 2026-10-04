@@ -1,5 +1,5 @@
+import { AppLog as hilog } from './AppLog';
 import { common } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 
 import { tcpConnectCanary } from '../net/DataplaneCanary';
 import {

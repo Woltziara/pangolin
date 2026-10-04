@@ -1,3 +1,4 @@
+import { AppLog } from './AppLog';
 import { common } from '@kit.AbilityKit';
 import { AppRoute, AppRoutingConfig, normalizeAppRoutingConfig } from '../core/AppRouteModel';
 import { StatusStore } from './StatusStore';
@@ -17,7 +18,7 @@ export class AppRouteStore {
     try {
       return normalizeAppRoutingConfig(raw);
     } catch (error) {
-      console.error(`AppRouteStore.load invalid config ${JSON.stringify(error)}`);
+      AppLog.error(0x3200, 'AppRouteStore', '%{public}s', `AppRouteStore.load invalid config ${JSON.stringify(error)}`);
       throw new Error('App 指定节点配置损坏，未加载部分规则；请检查后重新保存。');
     }
   }

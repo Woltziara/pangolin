@@ -4,6 +4,8 @@ const actual=makeLoader();
 // The gpt-* suites exercise these new production modules without these stubs.
 let uuid=0;
 export function legacyBoundary(name) {
+ if(name.endsWith('/AppLog')) return {AppLog:{info(){},debug(){},warn(){},error(){},fatal(){}}};
+ if(name.endsWith('/ErrorJournal')) return {ERROR_JOURNAL_FILES:[],ErrorJournal:{start(){},record(){},error(){},read(){return {};}}};
  if(name.endsWith('/BuildIdentity')) return {BuildIdentity:{source:()=>''}};
  if(name.endsWith('/CoreInfo')) return actual('core/CoreInfo.ets');
  if(name.endsWith('/TunnelNative')) return {systemBootId:()=>'',monotonicMillis:()=>0};

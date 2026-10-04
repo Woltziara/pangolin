@@ -1,3 +1,5 @@
+import { ErrorJournal } from '../services/ErrorJournal';
+import { AppLog as hilog } from '../services/AppLog';
 // 穿山 (GPL-3.0) — 订阅自动更新后台任务（Phase D 新增）。
 // WorkSchedulerExtensionAbility 骨架参考 Hey (GPL-3.0)
 // entry/src/main/ets/work/SubscriptionUpdateWorkAbility.ets（onWorkStart 内
@@ -8,7 +10,6 @@
 // 单次回调上限 2 分钟：按到期时间 oldest-first，最多更新 MAX_SUBSCRIPTIONS_PER_RUN 条。
 import { common } from '@kit.AbilityKit';
 import { WorkSchedulerExtensionAbility, workScheduler } from '@kit.BackgroundTasksKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { SettingsStore } from '../services/SettingsStore';
 import { SubscriptionManager } from '../services/SubscriptionManager';
 import { MAX_SUBSCRIPTIONS_PER_RUN } from '../services/SubscriptionScheduler';
@@ -21,6 +22,7 @@ const RUN_BUDGET_MS: number = 90000;
 
 export default class SubscriptionUpdateWorkAbility extends WorkSchedulerExtensionAbility {
   onWorkStart(work: workScheduler.WorkInfo): void {
+    ErrorJournal.start(this.context, 'subscription-work');
     this.runDueUpdates(work).catch((error: Object) => {
       hilog.error(LOG_DOMAIN, LOG_TAG, 'runDueUpdates %{public}s', JSON.stringify(error));
     });

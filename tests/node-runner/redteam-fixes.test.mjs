@@ -48,6 +48,7 @@ function load(path, deps = {}) {
   vm.runInNewContext(js, {
     module, exports: module.exports, Date, Map, Set, setTimeout, clearTimeout,
     require(n) {
+      if(n.endsWith('/AppLog') && deps['@kit.PerformanceAnalysisKit']) return {AppLog:deps['@kit.PerformanceAnalysisKit'].hilog};
       // Passive journal behavior is exercised by runtime-journal/history tests.
       if (n === '../services/RuntimeJournal') return { RuntimeJournal: { sample() {}, event() {} } };
       if (!(n in deps)) {const b=legacyBoundary(n);if(b!==undefined)return b;throw Error('Unexpected import '+n);} return deps[n];

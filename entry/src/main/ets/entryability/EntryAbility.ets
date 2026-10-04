@@ -1,5 +1,6 @@
+import { ErrorJournal } from '../services/ErrorJournal';
+import { AppLog as hilog } from '../services/AppLog';
 import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 import { BACKGROUND_PROBE_HOST } from '../services/BackgroundProbeHost';
 import { StatusStore } from '../services/StatusStore';
@@ -10,16 +11,26 @@ const DOMAIN = 0x3200;
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
+    ErrorJournal.start(this.context, 'ui');
     hilog.info(DOMAIN, 'Entry', 'onCreate');
     StatusStore.seedFromRawfile(this.context);
     SystemExitEvidence.start(this.context);
     BACKGROUND_PROBE_HOST.start(this.context, 'EntryAbility.onCreate');
     this.runRequestedLatencyProbe(want);
+    this.runRequestedMaintenance(want);
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     BACKGROUND_PROBE_HOST.start(this.context, 'EntryAbility.onNewWant');
     this.runRequestedLatencyProbe(want);
+    this.runRequestedMaintenance(want);
+  }
+
+  private runRequestedMaintenance(want: Want): void {
+    const request = want.parameters?.['maintenanceSelfTest'];
+    if (typeof request === 'string' && /^[a-f0-9]{8,64}$/.test(request)) {
+      ErrorJournal.record('error', 'maintenance-selftest', 'Synthetic diagnostic record; no application fault triggered', `request=${request}`);
+    }
   }
 
   private runRequestedLatencyProbe(want: Want): void {

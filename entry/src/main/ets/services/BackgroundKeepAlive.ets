@@ -1,7 +1,7 @@
+import { AppLog as hilog } from './AppLog';
 import { common, wantAgent, Want } from '@kit.AbilityKit';
 import { BusinessError, commonEventManager } from '@kit.BasicServicesKit';
 import { backgroundTaskManager } from '@kit.BackgroundTasksKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { BUNDLE_NAME } from '../vpn/VpnConstants';
 import { StatusStore } from './StatusStore';
 

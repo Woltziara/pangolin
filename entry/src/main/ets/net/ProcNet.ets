@@ -1,6 +1,6 @@
+import { AppLog as hilog } from '../services/AppLog';
 import { fileIo as fs } from '@kit.CoreFileKit';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 
 // HarmonyOS 7 起应用沙箱拒绝 file_api 读取 /proc/net/dev（EACCES，file_api ret -13）。
 // 第一次吃到权限错误后在进程生命周期内闩锁跳过，避免监督循环每 15 秒刷两条错误日志；

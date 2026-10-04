@@ -2,8 +2,8 @@
   "app": {
     "bundleName": "com.oscarwoltz.tongdao",
     "vendor": "oscarwoltz",
-    "versionCode": 1000139,
-    "versionName": "0.5.40-sleek",
+    "versionCode": 1000140,
+    "versionName": "0.5.41-local-diagnostics",
     "icon": "$media:layered_image",
     "label": "$string:app_name"
   }

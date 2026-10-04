@@ -1,3 +1,4 @@
+import { AppLog } from './AppLog';
 import { CONTROL_FILE, OWNER_TERMINAL_FILE, projectControl } from '../net/OwnerTerminal';
 import { common } from '@kit.AbilityKit';
 import { fileIo as fs } from '@kit.CoreFileKit';
@@ -211,7 +212,7 @@ export class StatusStore {
         fs.unlinkSync(path);
       }
     } catch (error) {
-      console.error(`unlink ${name} failed ${JSON.stringify(error)}`);
+      AppLog.error(0x3200, 'StatusStore', '%{public}s', `unlink ${name} failed ${JSON.stringify(error)}`);
       throw new Error(`未能删除本机文件：${name}`);
     }
     const names = StatusStore.listNames(context);
@@ -227,7 +228,7 @@ export class StatusStore {
           fs.unlinkSync(extraPath);
         }
       } catch (error) {
-        console.error(`unlink tmp ${extra} failed ${JSON.stringify(error)}`);
+        AppLog.error(0x3200, 'StatusStore', '%{public}s', `unlink tmp ${extra} failed ${JSON.stringify(error)}`);
         throw new Error(`未能删除本机文件：${extra}`);
       }
     }

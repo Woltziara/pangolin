@@ -41,3 +41,14 @@ class NativeHelpersTest(unittest.TestCase):
             subprocess.run([cxx, '-std=c++17', '-pthread', '-Wall', '-Wextra', '-Werror',
                 '-I', str(ROOT / 'entry/src/main/cpp'), str(ROOT / 'tests/protect_lease_test.cpp'), '-o', output], check=True)
             subprocess.run([output], check=True, timeout=10)
+
+    def test_error_journal_persistence_redaction_and_rotation(self):
+        cxx = shutil.which('clang++') or shutil.which('c++')
+        if not cxx:
+            self.skipTest('C++ compiler unavailable')
+        with tempfile.TemporaryDirectory() as temp:
+            output = str(Path(temp) / 'error-journal')
+            subprocess.run([cxx, '-std=c++17', '-pthread', '-Wall', '-Wextra', '-Werror',
+                '-I', str(ROOT / 'entry/src/main/cpp'), str(ROOT / 'tests/local_error_log_test.cpp'),
+                str(ROOT / 'entry/src/main/cpp/local_error_log.cpp'), '-o', output], check=True)
+            subprocess.run([output], check=True, timeout=20)

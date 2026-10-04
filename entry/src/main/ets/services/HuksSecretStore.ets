@@ -1,6 +1,6 @@
+import { AppLog as hilog } from './AppLog';
 import { common } from '@kit.AbilityKit';
 import { util } from '@kit.ArkTS';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { huks } from '@kit.UniversalKeystoreKit';
 import {
   APPLIED_FILE,

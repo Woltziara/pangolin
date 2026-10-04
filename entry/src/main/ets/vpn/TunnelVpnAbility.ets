@@ -1,3 +1,5 @@
+import { ErrorJournal } from '../services/ErrorJournal';
+import { AppLog as hilog } from '../services/AppLog';
 import { BuildIdentity } from '../services/BuildIdentity';
 import { Revocations } from '../services/Revocations';
 import { DEBUG_ACCESS } from '../core/CoreInfo';
@@ -14,7 +16,6 @@ import { emptyLeg, legShouldPromote, LINE_HEALTH_HOST, LINE_HEALTH_HOST_B, LegOb
 import { digestText, META_STAGING_FILE } from '../core/OutboundCommit';
 import { NODE_LATENCY_TEST } from '../services/NodeLatencyTest';
 import { BusinessError } from '@kit.BasicServicesKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { connection, vpnExtension, VpnExtensionAbility } from '@kit.NetworkKit';
 import { util, process } from '@kit.ArkTS';
 import Want from '@ohos.app.ability.Want';
@@ -190,6 +191,7 @@ export default class TunnelVpnAbility extends VpnExtensionAbility {
   private layers: LayerEvidence = new LayerEvidence();
 
   onCreate(want: Want): void {
+    ErrorJournal.start(this.context, 'vpn');
     // A diagnostic request must never start or restart a stopped VPN.
     if (this.wantString(want, VPN_COMMAND_KEY, '').startsWith('diagnose-')) {
       return;
